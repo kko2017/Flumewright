@@ -1,0 +1,33 @@
+# Build
+bin/
+obj/
+[Bb]in/
+[Oo]bj/
+
+# Test results
+TestResults/
+*.trx
+coverage*.xml
+
+# IDE / OS
+.vs/
+.idea/
+*.user
+.DS_Store
+
+# Certificates & keys (never commit — key leakage risk; see plan 7.1)
+*.pfx
+*.key
+*.pem
+*.crt
+*.cer
+*.p12
+certs/
+
+# Logs (never commit; see plan §4 logging)
+logs/
+*.log
+
+# Local config
+appsettings.Development.json
+*.local.json
