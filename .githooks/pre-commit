@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -e
+echo "> pre-commit: build + fast unit tests"
+dotnet build --configuration Debug --nologo
+dotnet test tests/Flumewright.UnitTests --no-build --nologo \
+  --filter "Category!=Load&Category!=Integration"
+echo "OK pre-commit passed"

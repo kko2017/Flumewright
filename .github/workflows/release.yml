@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore & Build
+        run: |
+          dotnet restore
+          dotnet build --no-restore --configuration Release
+
+      - name: Test (gate before release)
+        run: dotnet test --no-build --configuration Release --filter "Category!=Load"
+
+      - name: Publish broker
+        run: >
+          dotnet publish src/Flumewright.Broker
+          --configuration Release
+          --output ./publish/broker
+          --no-build
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          tar -czf dist/flumewright-broker-${{ github.ref_name }}-linux-x64.tar.gz -C ./publish/broker .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            dist/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

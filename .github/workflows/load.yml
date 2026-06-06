@@ -1,0 +1,17 @@
+name: Load Tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * *'
+
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+      - name: Load tests
+        run: dotnet test tests/Flumewright.LoadTests --filter "Category=Load" --configuration Release
