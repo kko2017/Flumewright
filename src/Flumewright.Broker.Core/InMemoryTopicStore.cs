@@ -48,6 +48,7 @@ public sealed class InMemoryTopicStore : ITopicStore
         finally
         {
             topicState.Subscribers.TryRemove(subId, out _);
+            channel.Writer.Complete();
         }
     }
 }
