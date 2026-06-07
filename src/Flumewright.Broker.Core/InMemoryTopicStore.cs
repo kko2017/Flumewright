@@ -16,7 +16,7 @@ public sealed class InMemoryTopicStore : ITopicStore
 
     private readonly ConcurrentDictionary<string, Topic> _topics = new();
 
-    public async ValueTask<long> PublishAsync(string topic, IReadOnlyDictionary<string, string> headers, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
+    public ValueTask<long> PublishAsync(string topic, IReadOnlyDictionary<string, string> headers, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
         var topicState = _topics.GetOrAdd(topic, _ => new Topic());
         long offset = topicState.GetNextOffset();
@@ -24,10 +24,10 @@ public sealed class InMemoryTopicStore : ITopicStore
         
         foreach (var sub in topicState.Subscribers.Values)
         {
-            await sub.Writer.WriteAsync(message, ct);
+            sub.Writer.TryWrite(message);
         }
         
-        return offset;
+        return new ValueTask<long>(offset);
     }
 
     public async IAsyncEnumerable<StoredMessage> SubscribeAsync(string topic, [EnumeratorCancellation] CancellationToken ct = default)
