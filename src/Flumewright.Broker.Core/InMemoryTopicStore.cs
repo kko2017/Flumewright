@@ -6,37 +6,48 @@ namespace Flumewright.Broker.Core;
 
 public sealed class InMemoryTopicStore : ITopicStore
 {
-    private class TopicPartition
+    private class Topic
     {
-        public Channel<StoredMessage> Channel { get; } = System.Threading.Channels.Channel.CreateUnbounded<StoredMessage>();
+        public ConcurrentDictionary<Guid, Channel<StoredMessage>> Subscribers { get; } = new();
         private long _offsetCounter = -1;
 
         public long GetNextOffset() => Interlocked.Increment(ref _offsetCounter);
-        public long CurrentOffset => Interlocked.Read(ref _offsetCounter);
     }
 
-    private readonly ConcurrentDictionary<string, TopicPartition> _topics = new();
+    private readonly ConcurrentDictionary<string, Topic> _topics = new();
 
     public async ValueTask<long> PublishAsync(string topic, IReadOnlyDictionary<string, string> headers, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
-        var partition = _topics.GetOrAdd(topic, _ => new TopicPartition());
-        long offset = partition.GetNextOffset();
+        var topicState = _topics.GetOrAdd(topic, _ => new Topic());
+        long offset = topicState.GetNextOffset();
         var message = new StoredMessage(offset, headers, payload);
-        await partition.Channel.Writer.WriteAsync(message, ct);
+        
+        foreach (var sub in topicState.Subscribers.Values)
+        {
+            await sub.Writer.WriteAsync(message, ct);
+        }
+        
         return offset;
     }
 
     public async IAsyncEnumerable<StoredMessage> SubscribeAsync(string topic, [EnumeratorCancellation] CancellationToken ct = default)
     {
-        var partition = _topics.GetOrAdd(topic, _ => new TopicPartition());
-        long startOffset = partition.CurrentOffset;
+        var topicState = _topics.GetOrAdd(topic, _ => new Topic());
+        var subId = Guid.NewGuid();
+        var channel = Channel.CreateUnbounded<StoredMessage>();
+        
+        topicState.Subscribers.TryAdd(subId, channel);
 
-        await foreach (var msg in partition.Channel.Reader.ReadAllAsync(ct))
+        try
         {
-            if (msg.Offset > startOffset)
+            await foreach (var msg in channel.Reader.ReadAllAsync(ct))
             {
                 yield return msg;
             }
+        }
+        finally
+        {
+            topicState.Subscribers.TryRemove(subId, out _);
         }
     }
 }

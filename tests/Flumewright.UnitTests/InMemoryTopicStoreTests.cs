@@ -125,4 +125,86 @@ public class InMemoryTopicStoreTests
         uniqueOffsets.First().Should().Be(0);
         uniqueOffsets.Last().Should().Be(count - 1);
     }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task FanOut_TwoSubscribersReceiveSameMessage()
+    {
+        var store = new InMemoryTopicStore();
+        using var cts = new CancellationTokenSource();
+
+        var enum1 = store.SubscribeAsync("topic1", cts.Token).GetAsyncEnumerator(cts.Token);
+        var enum2 = store.SubscribeAsync("topic1", cts.Token).GetAsyncEnumerator(cts.Token);
+        
+        var read1 = enum1.MoveNextAsync().AsTask();
+        var read2 = enum2.MoveNextAsync().AsTask();
+
+        await store.PublishAsync("topic1", new Dictionary<string, string>(), new byte[] { 42 }.AsMemory());
+
+        var hasNext1 = await read1;
+        var hasNext2 = await read2;
+
+        hasNext1.Should().BeTrue();
+        hasNext2.Should().BeTrue();
+
+        enum1.Current.Offset.Should().Be(0);
+        enum2.Current.Offset.Should().Be(0);
+        enum1.Current.Payload.ToArray()[0].Should().Be(42);
+        enum2.Current.Payload.ToArray()[0].Should().Be(42);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task LateSubscriber_DoesNotGetPreSubscriptionMessages()
+    {
+        var store = new InMemoryTopicStore();
+        using var cts = new CancellationTokenSource();
+
+        await store.PublishAsync("topic1", new Dictionary<string, string>(), new byte[] { 1 }.AsMemory());
+
+        var enum1 = store.SubscribeAsync("topic1", cts.Token).GetAsyncEnumerator(cts.Token);
+        var read1 = enum1.MoveNextAsync().AsTask();
+
+        await store.PublishAsync("topic1", new Dictionary<string, string>(), new byte[] { 2 }.AsMemory());
+
+        var hasNext1 = await read1;
+        hasNext1.Should().BeTrue();
+
+        enum1.Current.Offset.Should().Be(1);
+        enum1.Current.Payload.ToArray()[0].Should().Be(2);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task Unsubscribe_CleansUpAndOthersStillWork()
+    {
+        var store = new InMemoryTopicStore();
+        
+        var cts1 = new CancellationTokenSource();
+        var cts2 = new CancellationTokenSource();
+
+        var enum1 = store.SubscribeAsync("topic1", cts1.Token).GetAsyncEnumerator(cts1.Token);
+        var enum2 = store.SubscribeAsync("topic1", cts2.Token).GetAsyncEnumerator(cts2.Token);
+        
+        var read1 = enum1.MoveNextAsync().AsTask();
+        var read2 = enum2.MoveNextAsync().AsTask();
+
+        // Cancel subscriber 1
+        cts1.Cancel();
+
+        // Ensure enum1 throws TaskCanceledException or returns false
+        try
+        {
+            await read1;
+        }
+        catch (OperationCanceledException) { }
+
+        // Publish
+        await store.PublishAsync("topic1", new Dictionary<string, string>(), new byte[] { 99 }.AsMemory());
+
+        // Enum2 should still get it
+        var hasNext2 = await read2;
+        hasNext2.Should().BeTrue();
+        enum2.Current.Payload.ToArray()[0].Should().Be(99);
+    }
 }
