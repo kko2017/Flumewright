@@ -1,4 +1,4 @@
-# Distributed Message Bus — Execution Plan v0.3
+# Distributed Message Bus — Execution Plan v0.5
 
 > Codename: **Flumewright** (short alias: **fw** — used in the proto package `fw.v1`, etc.)
 > Stack: C# / .NET 8.0 (LTS) / gRPC (HTTP/2) / Protobuf
@@ -18,7 +18,7 @@ references another document, it points to the filenames below.
 | Study Notes | `02-study-notes.en.md` → `docs/learning/study-notes.md` | Learning material on PubSub / message bus concepts |
 | Version Control & Validation Guide | `03-version-control-guide.en.md` → `docs/guides/version-control-and-validation-guide.md` | Branch, commit, and test-gate rules |
 | Phase 0 Scaffolding Instructions | `04-phase0-scaffolding.en.md` | Step-by-step CLI commands for initial setup |
-| CLI Master Instruction & CI/CD | `05-cli-master-instruction.en.md` | CLI command prompts + Release/dev-artifact workflows |
+| CLI Master Instruction & CI/CD | `05-phase0-cli-master-instruction.en.md` | CLI command prompts + Release/dev-artifact workflows |
 | README | `06-README.en.md` → `README.md` | Repository entry document |
 
 > All document references in this (English) version point to `*.en.md`.
@@ -267,6 +267,16 @@ running different sets at each gate (Section 12.3). For per-gate rules, see `03-
 - Start broker + N publishers + M subscribers as separate processes, end-to-end including mTLS handshake.
 - At-least-once verification: confirm all messages are eventually received after forced nack/disconnect.
 
+> **Staging note (DEC-007):** the above is the *final-form* system test with mTLS and multiple clients.
+> **M1's e2e integration test starts as a single message, in-process (real-port Kestrel)** — M1's bar is
+> "one message through", not "prove physical process separation", and the separation requirement is already
+> met by the architecture (standalone broker host + gRPC). True separate-process e2e arrives naturally at
+> M4 (mTLS) / M5 (load); manual smoke is always available via the sample consoles.
+> **Implementation note (M1 Step 5 done):** the in-process host is built directly via `WebApplication` in an
+> `IAsyncLifetime` fixture (NOT `WebApplicationFactory`, which conflicts with the real-Kestrel `Program.cs`);
+> bind `IPAddress.Loopback:0` for a dynamic h2c port. The `Http2UnencryptedSupport` switch is unnecessary on
+> .NET 8. See decision-and-fix-log FIX-005 / DEC-008.
+
 ### 10.3 Performance / Stress
 | Item | Measured |
 |------|----------|
@@ -285,7 +295,7 @@ running different sets at each gate (Section 12.3). For per-gate rules, see `03-
 - Use a **repository `docs/` folder instead of a Wiki**. Versioned in the same commits/PRs as code,
   preventing code-doc drift and fitting the CLI workflow.
 - Record milestone design decisions in `docs/design/mN-*.md`; capture significant decisions as **ADRs**
-  (`docs/decisions/NNNN-*.md`). For the ADR template, see `05-cli-master-instruction.en.md` Section A.
+  (`docs/decisions/NNNN-*.md`). For the ADR template, see `05-phase0-cli-master-instruction.en.md` Section A.
 - Bundle code and docs in the **same commit/PR**.
 - Update the README "Quick Start" whenever a feature becomes functional.
 - **Language policy:** all repository text is in **English** — README, docs, ADRs, commit messages,
@@ -339,7 +349,7 @@ docs/
 | `load.yml` | manual / nightly cron | Performance & stress tests |
 | `release.yml` | **push `v*.*.*` tag** | Release build + packaging + publish to Releases tab |
 
-- Full workflow YAML and the dev-artifact/Release supplements: see `05-cli-master-instruction.en.md` Section B and `04-phase0-scaffolding.en.md` Section 4.
+- Full workflow YAML and the dev-artifact/Release supplements: see `05-phase0-cli-master-instruction.en.md` Section B and `04-phase0-scaffolding.en.md` Section 4.
 - Action versions: `actions/checkout@v6`, `actions/setup-dotnet@v5`, `actions/cache@v4`,
   `actions/upload-artifact@v4`, `softprops/action-gh-release@v3`.
 - **Dev build**: each main CI uploads the broker artifact to Actions Artifacts (download the latest dev build).
@@ -351,7 +361,7 @@ docs/
 ## 14. Roadmap
 
 ### Phase 0 — Scaffolding (CLI-executed, stop before push)
-> Step-by-step commands: `04-phase0-scaffolding.en.md`. The CLI command prompt: `05-cli-master-instruction.en.md` Section D.
+> Step-by-step commands: `04-phase0-scaffolding.en.md`. The CLI command prompt: `05-phase0-cli-master-instruction.en.md` Section D.
 - Solution/project structure, .gitignore/editorconfig/global.json/Directory.Build.props.
   - `.gitignore` blocks .NET build output **plus** certs/keys (`certs/`, `*.pfx`, `*.pem`, `*.key`, `*.crt`) and logs (`logs/`, `*.log`).
   - `global.json` pins .NET 8 SDK (`rollForward: latestFeature`); `Directory.Build.props` sets net8.0 / Nullable / `TreatWarningsAsErrors=true` / analyzers for all projects.
@@ -396,3 +406,5 @@ docs/
 | v0.1 | Initial draft — scope/architecture/technical design/roadmap |
 | v0.2 | Added development process (version control, validation, GitHub boundary), documentation policy (docs/ + ADR, English-only repo text), CI/CD (CI/Load/Release + dev artifact), document map, and open questions (DLQ, license, CD target) |
 | v0.3 | Added Section 7.1 — mandatory certgen checklist for M4 (CA BasicConstraints, broker SAN incl. localhost, client EKU clientAuth, single CA chain); leaning toward a .NET console tool; Phase 0 must .gitignore certs/keys. Cross-linked from the M4 roadmap item. Logging decision: Serilog behind MEL with rolling file sink (wired at M6, async sink revisited at M5/M6); Phase 0 .gitignores logs/ and *.log. Detailed Phase 0 Ch.3 root-config decisions (gitignore certs+logs, global.json SDK pin, Directory.Build.props warnings-as-errors). |
+| v0.4 | Added staging note to §10.2 (DEC-007) — M1's integration test starts in-process (real-port Kestrel) with a single message; separate-process/mTLS e2e is the final form at M4/M5. M1's bar is "one message through". |
+| v0.5 | M1 Step 5 done (e2e integration test passes → M1 functional phase complete). Refined §10.2 with the implementation note: the in-process host is built directly via `WebApplication` in an `IAsyncLifetime` fixture, not `WebApplicationFactory` (which conflicts with the real-Kestrel `Program.cs`); bind `IPAddress.Loopback:0` for a dynamic h2c port; the `Http2UnencryptedSupport` switch is unnecessary on .NET 8 (decision-and-fix-log FIX-005 / DEC-008). |

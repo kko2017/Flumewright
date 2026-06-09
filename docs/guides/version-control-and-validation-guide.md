@@ -278,6 +278,77 @@ Principle: **each line (commit) is itself in a build/test-passing state.**
 
 ---
 
+## 7.5 End-of-Milestone Review (zoom-out code review)
+
+When a milestone (M1, M2…) finishes, have the CLI zoom out and review the whole codebase **before**
+merging to main. Per-step verification (done by the human) has a narrow view and can miss the
+consistency / duplication / leak issues that emerge only after several steps stack up. This review
+fills that gap. **But without a bounded scope it becomes an entry point for needless refactors and
+feature creep**, so enforce the rules below.
+
+### Rules
+1. **Timing:** end of milestone only (NOT per step). After the milestone's last-step commit, before merge.
+2. **Narrow the question:** "any improvements?" (open) is banned. **Only correctness, consistency, and
+   resource-leak issues, within the current milestone's scope.** Exclude new features, future-milestone
+   (M2+) proposals, and out-of-scope refactors. In particular, **intentionally deferred choices**
+   (e.g. unbounded channels, unary publish) are NOT defects — do not flag them.
+3. **Report only, no edits:** the CLI classifies findings and **reports only**. It must not touch code
+   before the user approves.
+4. **Force classification** into three buckets:
+   - `[correctness/bug]` — a real defect to fix now
+   - `[consistency/cleanup]` — naming/pattern alignment (decide whether to fix)
+   - `[out-of-scope — record only]` — future-milestone related → don't edit code, log it in 09
+
+### Flow
+```
+last-step commit of the milestone done
+      │
+      ▼
+[CLI] zoom-out review → report only, in 3 buckets (no edits)
+      │
+      ▼
+[user review] per bucket: fix now / defer to 09 / ignore
+      │
+      ▼
+[CLI] edit only approved items → commit  (usually 1–2)
+      │
+      ▼
+   merge to main → (if Phase end) tag
+```
+
+> Of the findings: `[correctness/bug]` fixes become FIX entries in the 09 decision-and-fix log;
+> `[out-of-scope]` items become DEC/notes. This review is one of 09's input sources.
+
+### Example CLI instruction
+> **Attach:** `@FW_Context.md @09-decision-and-fix-log.en.md @01-execution-plan.en.md @03-version-control-guide.en.md`
+> (Do NOT give the CLI the 08 verification log — it's the user's personal check record. **Always attach
+> 09** — its "intentionally deferred" list is the review guardrail, preventing the CLI from wrongly
+> flagging those as bugs.)
+>
+> "M1 is done. Zoom out and review the whole codebase — **but only for correctness, consistency, and
+> resource leaks within M1's current scope.** Do not propose new features or M2+ work, and do not do
+> out-of-scope refactors. Items recorded in the 09 log as intentionally deferred (unbounded channels,
+> unary publish, etc.) are not defects. Classify findings as [correctness/bug] / [consistency/cleanup]
+> / [out-of-scope — record only] and **report only** — do not edit any code until I approve."
+
+### Milestone wrap-up sequence (the review is one step in this flow)
+A milestone is **triggered by the user** (not automatic — the user decides where the milestone ends)
+and closed in this order:
+1. Last feature step committed (e.g. M1 = Step 5 integration test passing).
+2. **docs/ sync + design note** (M1 = Step 6): re-copy (overwrite) the changed English documents into
+   their repo `docs/` paths to refresh them, update the milestone design note (`docs/design/mN-*.md`)
+   and the README "Quick Start", and `docs:` commit. (If personal-reference originals like 01/02/03
+   weren't synced along the way, fold them in here.) Also place/update the 09 log's English version at
+   `docs/decisions/decision-and-fix-log.md`.
+3. **7.5 zoom-out review** (instruction above) → fix only 1–2 [correctness/bug] items after approval.
+4. Reflect outcomes into 08 (verification) and 09 (fix/decision).
+5. Confirm CI green → **user** merges to main → (if Phase end) tag.
+
+> So docs/ sync is not "every time" but **bundled into milestone wrap-up (step 2)** — cleaner history,
+> and Step 6 is already the docs step, so it absorbs naturally.
+
+---
+
 ## 8. .gitignore Basics (.NET)
 
 ```gitignore
@@ -354,4 +425,4 @@ unvalidated code to accumulate or enter main.
 
 - Execution Plan: `01-execution-plan.en.md`
 - Phase 0 Scaffolding Instructions: `04-phase0-scaffolding.en.md`
-- CLI Master Instruction & CI/CD: `05-cli-master-instruction.en.md`
+- CLI Master Instruction & CI/CD: `05-phase0-cli-master-instruction.en.md`
