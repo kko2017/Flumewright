@@ -7,7 +7,7 @@ using System.Runtime.CompilerServices;
 namespace Flumewright.Client;
 
 public sealed record ReceivedMessage(
-    string Topic, long Offset,IReadOnlyDictionary<string,string> Headers, byte[] Paylaod);
+    string Topic, long Offset,IReadOnlyDictionary<string,string> Headers, byte[] Payload);
 
 public sealed class FlumewrightSubscriber: IDisposable
 {
