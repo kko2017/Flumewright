@@ -13,7 +13,7 @@ public sealed class PublishSubscribeE2ETests : IClassFixture<BrokerAppFactory>
     [Trait("Category", "Integration")]
     public async Task SingleMessage_FlowsFromPublisherToSubscriber()
     {
-        // (4b 스위치가 필요했다면 여기 첫 채널 생성 전에 한 번 — 08 Step4 발견사항 참조)
+        // (If the 4b switch was needed, once before creating the first channel here — see 08 Step 4 findings)
          //AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
 
         var address = _factory.Address;    // http://127.0.0.1:{port}
@@ -25,7 +25,7 @@ public sealed class PublishSubscribeE2ETests : IClassFixture<BrokerAppFactory>
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
 
-        // 함정② 대응: 구독을 백그라운드로 먼저 시작해 스트림을 확립한다.
+        // Mitigate Trap ②: Start the subscription in the background first to establish the stream.
         var received = new TaskCompletionSource<ReceivedMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var pump = Task.Run(async () =>
@@ -33,13 +33,13 @@ public sealed class PublishSubscribeE2ETests : IClassFixture<BrokerAppFactory>
             await foreach (var msg in subscriber.SubscribeAsync(topic, cts.Token))
             {
                 received.TrySetResult(msg);
-                break; // 1건이면 충분
+                break; // 1 message is enough
             }
         }, cts.Token);
 
-        // 구독 스트림이 broker에 등록될 시간을 안정적으로 확보:
-        // (간단·견고하게: 짧게 재시도하며 publish — LATEST라 첫 시도가 빠르면 놓칠 수 있으므로
-        //  도착할 때까지 몇 번 재발행. Delay 단독 대신 "재발행 + 타임아웃 대기" 조합으로 flaky 차단.)
+        // Reliably ensure time for the subscription stream to register with the broker:
+        // (Simply & robustly: publish with short retries — since it is LATEST, a too-early first publish might be missed,
+        //  so republish a few times until it arrives. Avoid using Delay alone; block flakiness with a "re-publish + timeout wait" combo.)
         long lastOffset = -1;
         while(!received.Task.IsCompleted && !cts.IsCancellationRequested)
         {

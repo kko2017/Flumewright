@@ -14,13 +14,13 @@ public sealed class BrokerAppFactory : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        // Program.cs와 동일한 부트스트랩을 포트 0으로 실행 → OS가 빈 포트 할당
+        // Run the same bootstrap as Program.cs on port 0 -> OS allocates an empty port
         var builder = WebApplication.CreateBuilder();
         builder.Configuration["Broker:Port"] = "0";
 
         builder.WebHost.ConfigureKestrel(options =>
         {
-            options.Listen(IPAddress.Loopback, 0, listen =>     // 127.0.0.1:0 — 동적 포트 OK
+            options.Listen(IPAddress.Loopback, 0, listen =>     // 127.0.0.1:0 — dynamic port is OK
                     listen.Protocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2);
         });
 
@@ -33,12 +33,12 @@ public sealed class BrokerAppFactory : IAsyncLifetime
 
         await _app.StartAsync();
 
-        // 실제 바인딩된 주소 읽기 (예: http://127.0.0.1:53124)
+        // Read the actual bound address (e.g. http://127.0.0.1:53124)
         var server = _app.Services.GetRequiredService<IServer>();
         var addresses = server.Features.Get<IServerAddressesFeature>()!;
-        var bound = addresses.Addresses.First();              // 예: http://0.0.0.0:53124
+        var bound = addresses.Addresses.First();              // e.g. http://0.0.0.0:53124
         Address = bound.Replace("0.0.0.0", "127.0.0.1")
-                       .Replace("[::]", "127.0.0.1");          // 클라이언트가 붙을 수 있는 주소로
+                       .Replace("[::]", "127.0.0.1");          // Convert to an address the client can connect to
     }
 
     public async Task DisposeAsync()
