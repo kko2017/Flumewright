@@ -48,7 +48,7 @@ public sealed class PublishSubscribeE2ETests : IClassFixture<BrokerAppFactory>
             if (done == received.Task) break;
         }
 
-        var got = await received.Task;
+        var got = await received.Task.WaitAsync(cts.Token);
 
         got.Topic.Should().Be(topic);
         got.Payload.Should().Equal(payload);
