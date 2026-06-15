@@ -524,6 +524,64 @@ separate process in M5 (load). (Incident/decisions: 09 FIX-005 · DEC-007 · DEC
 
 ---
 
+## 11.7 Dev environment: containers, Linux capabilities & Git file mode
+
+**Why this is here:** development moved into a VS Code **dev container** (09 DEC-009). Three concepts
+came up that are worth understanding, because each caused a concrete failure during setup. None is about
+the message bus itself — they are about the *environment* a distributed system is built and tested in, and
+they recur on any container-based or CI workflow.
+
+### ① Dev container = reproducible, isolated dev environment
+**Concept:** a dev container is a Docker container described by `.devcontainer/devcontainer.json` (committed
+to the repo) that holds the exact toolchain — here `mcr.microsoft.com/devcontainers/dotnet:8.0`. The editor
+attaches *into* the container, so everyone (and CI) builds in the same place.
+- **Why it matters for this project:** CI already runs on `ubuntu-latest`. Developing in a Linux container
+  makes **local == CI**, removing "works on my machine" drift. .NET 8 is cross-platform and all build/test is
+  `dotnet` CLI, so nothing in the project had to change.
+- **Key distinction:** the container isolates **what the agent can *do*** (processes, permissions), not
+  **what files it sees**. With a **bind mount**, the workspace folder is the *same files* as on the host —
+  edit in either place, it's one file. (A "Clone in Container Volume" setup would instead keep files inside
+  the container.)
+
+### ② Linux capabilities — fine-grained root powers
+**Concept:** Linux splits "root's powers" into discrete **capabilities** (e.g. `SETUID`/`SETGID` to change
+user/group, `SYS_PTRACE` to attach a debugger, `AUDIT_WRITE`). A container can drop them to shrink the attack
+surface.
+- **In this config:** `--cap-drop=ALL` drops everything, then `--cap-add=SYS_PTRACE` adds back only what
+  .NET debugging needs. Combined with non-root `vscode`, this is the "limit a misbehaving agent" stance.
+- **The trade-off we hit:** with all capabilities dropped, **`sudo` itself can't work** (it needs
+  `SETUID`/`SETGID` to become root) → `sudo: unable to change to root gid: Operation not permitted`. The
+  lesson: install OS packages at **container build time** (via a dev-container *feature*, which runs before
+  the drop) rather than `sudo apt-get` at runtime. (09 DEC-009)
+
+### ③ File ownership across a bind mount (UID mismatch)
+**Concept:** Linux files are owned by a numeric **UID**. A bind-mounted host folder keeps its host
+ownership/permissions inside the container. If the host UID ≠ the container user's UID, the container user
+may not own "its own" files.
+- **What broke:** host-created `obj/` markers were owned by UID 0 (root) while the container user is
+  `vscode` (UID 1000), so `dotnet build` couldn't update them (`MSB3374 … Access … denied`), and `chmod`
+  on a non-owned file failed (`Operation not permitted`). Deleting stale `bin/`/`obj/` (regenerated under
+  `vscode`) fixed the build. (09 DEC-010)
+
+### ④ Git file mode (100644 vs 100755) — the exec bit lives in the repo
+**Concept:** Git tracks a minimal **file mode**: `100644` (normal) or `100755` (executable). The executable
+bit is stored **in the repo index**, not just on your local filesystem — so a script's "runnable" state
+travels with clones.
+- **Why it bit us:** the `pre-commit` hook was committed as `100644`. **Git won't run a non-executable
+  hook**, so the local build+test gate (03 §5.1) could have been silently skipped throughout M1 — even
+  though `core.hooksPath` was set. Likely cause: a Windows host never recorded the exec bit in the index.
+- **The fix (filesystem `chmod` failed due to ③):** `git update-index --chmod=+x .githooks/pre-commit`
+  sets the **index** mode to `100755` regardless of file ownership, then commit. Now any clone on any OS
+  restores the bit. (09 FIX-007)
+- **General lesson:** "a gate that is *configured*" ≠ "a gate that *runs*." The same verify-don't-assume
+  discipline from 08 applies to tooling, not just code.
+
+**Flumewright usage:** this is environment knowledge, not runtime architecture — but it underpins every
+build/test/commit from M2 on. The committed `devcontainer.json` is also a portfolio artifact (reproducible
+environment). (Decisions: 09 DEC-009 · DEC-010 · FIX-007)
+
+---
+
 ## 12. Glossary
 
 | Term | Meaning |
@@ -545,6 +603,11 @@ separate process in M5 (load). (Incident/decisions: 09 FIX-005 · DEC-007 · DEC
 | CA | The root of trust that signs/issues certificates (Certificate Authority) |
 | Opaque payload | Opaque bytes whose content the broker does not interpret |
 | Fan-out | Spreading one message to many subscribers (broadcast) |
+| Dev container | A Docker-based, reproducible dev environment defined by `.devcontainer/` and committed to the repo |
+| Linux capability | A discrete slice of root's privileges (e.g. SETUID, SYS_PTRACE) that a container can grant or drop |
+| Bind mount | Mounting a host folder into a container so both see the *same* files (vs an isolated volume) |
+| UID | Numeric Linux user id; a bind-mount UID mismatch can make the container user unable to write "its own" files |
+| Git file mode | The exec bit Git stores in the index (`100644` normal / `100755` executable), carried across clones |
 
 ---
 

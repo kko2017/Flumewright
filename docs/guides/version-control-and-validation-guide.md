@@ -390,6 +390,10 @@ appsettings.Development.json
 > **Security note:** never commit mTLS dev certificates/keys. Generate them locally via the certgen
 > tool and keep only the generation script in the repo.
 
+> **Dev container note:** `.devcontainer/devcontainer.json` (and any `post-create.sh`) **is committed** —
+> it defines the build/test environment, not a personal local setting. Keep it tracked. The hook exec bit
+> is carried in git (`100755` via `git update-index --chmod=+x`), so dev-container setup needs no `chmod`.
+
 ---
 
 ## 9. At-a-glance — The Flow You Follow

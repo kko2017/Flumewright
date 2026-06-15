@@ -234,3 +234,157 @@
 - **Future impact:** remove this switch line from the sample `Program.cs` files
   (`SamplePublisher`/`SampleSubscriber`) too (folded into the Step 6 cleanup). Moot once M4 moves to TLS,
   since h2c disappears.
+
+## FIX-006 — CLI's broad `git add` staged unrelated changes into the wrong commits
+- **Milestone/Step:** M1 / Step 6 (recurred 3× during the milestone-wrap docs commits → all corrected)
+- **Severity:** hygiene / history integrity (not a code defect — but it damages history trust)
+- **Symptom:** During Step 6 the CLI staged too broadly (`git add .` / `--renormalize .`), producing 3
+  commits whose **message and actual content disagreed**:
+  1. The `chore: renormalize line endings` commit also pulled in sample SDK implementation code
+     (`samples/*/Program.cs`) and README changes — a "line-endings-only" commit carrying new code
+     (diff was +49/-6, a net addition).
+  2. That sample code committed the `Http2UnencryptedSupport` switch **still turned on**, the very thing
+     Step 5 decided to remove (a DEC-008 violation).
+  3. The Step 5 integration-test artifacts (`BrokerAppFactory.cs`, `PublishSubscribeE2ETests.cs`) landed
+     in the `chore: add .gitattributes` commit instead of a dedicated `test(integration):` commit — so
+     **M1's completion evidence was hidden inside a chore commit**.
+- **Cause:** the CLI used broad staging instead of per-file `git add <path>`, indiscriminately including
+  other uncommitted working-tree changes (sample impl, integration test, README). Violates "one commit =
+  one validated small change" (03).
+- **Fix:** all were pre-push (local only), so safe to restructure. `git reset --mixed HEAD~N` to unwind the
+  commits, then per-file `git add` to recommit by meaning: ① remove the sample switch, then `feat(samples):`
+  ② integration test as `test(integration):` ③ `.gitattributes` as a standalone `chore:`. Final order
+  (bottom→top): `chore(.gitattributes)` → `test(integration)` → `feat(samples)` → `docs(sync)` →
+  `docs(README)`. After each commit, `git show --stat HEAD` to verify only the intended files were included.
+- **Future impact:** ⚠️ **operating-rule reinforcement** — CLI commit-step instructions must always include
+  (a) **explicit per-path `git add <path>` only** (no broad `git add .`), and (b) **user verifies the file
+  list via `git show --stat HEAD` immediately after each commit**. From M2 on, embed these two guards as
+  standard instruction boilerplate (also reflected in FW_Context §10 operating rules). This incident is the
+  git-flavored case of "a CLI report of 'done' is not a conclusion" (08 principle).
+
+## FIX-007 — pre-commit hook tracked as 100644: the local validation gate may never have run
+- **Milestone/Step:** discovered during dev-container setup (post-M1, pre-merge) → fixed immediately
+- **Severity:** real process defect (the first validation gate was effectively disabled) — not a code bug
+- **Symptom:** In the Linux dev container, `git ls-files -s .githooks/pre-commit` showed mode **100644**
+  (non-executable). Git does not run a hook file without the executable bit, so the pre-commit
+  build+unit-test gate (03 §5.1) could have been silently skipped on commits — even though
+  `core.hooksPath` was correctly set to `.githooks`.
+- **Cause:** Phase 0 created the hook and 03 §5.1 calls for `chmod +x`, but the executable bit was never
+  recorded in the **git index** — likely because the original host was Windows (where the filesystem
+  exec bit is weak / not represented), so the bit applied locally at best and never persisted in the repo.
+  A plain `chmod +x` inside the container also failed (`Operation not permitted`) due to bind-mount file
+  ownership (see DEC-010), so the fix had to go through git, not the filesystem.
+- **Fix:** `git update-index --chmod=+x .githooks/pre-commit` (sets the index mode to **100755**
+  independent of filesystem ownership), then commit. From now the exec bit travels with the repo, so any
+  clone on any OS restores it — and the `chmod` line becomes unnecessary in container setup.
+- **Future impact:** the local gate is now actually enforced. Worth re-confirming the hook *fires* (make a
+  trivial change and commit; the build/test log should appear). A reminder that "a gate that is configured"
+  ≠ "a gate that runs" — the 08-style verify-don't-assume principle applied to tooling.
+
+## DEC-009 — Development moved into a VS Code dev container (Linux)
+- **Milestone/Step:** post-M1 (before the zoom-out review / merge) — tooling/environment decision
+- **Type:** environment decision
+- **Decision:** Develop inside a VS Code **dev container** (`.devcontainer/devcontainer.json`, committed to
+  the repo) based on `mcr.microsoft.com/devcontainers/dotnet:8.0`, running as non-root `vscode` with a
+  hardened profile (`--cap-drop=ALL` + `SYS_PTRACE`, `seccomp=unconfined`). The Antigravity CLI runs
+  **inside** this container.
+- **Rationale:** (a) reproducibility — a clone reproduces the exact .NET 8 toolchain; (b) **local == CI**
+  — CI already runs on `ubuntu-latest`, so a Linux container removes "works on my machine" drift; (c) the
+  hardened, non-root profile fits the project's "AI agent under control" stance (limits what a misbehaving
+  agent can touch). The committed config is itself a portfolio artifact (reproducible environment).
+- **Cross-platform safety (the "does the project still work the same on Linux?" check):** the project was
+  already Linux-friendly — .NET 8 is cross-platform, all build/test is `dotnet` CLI, CI was already Ubuntu,
+  and the Step 5 integration test binds loopback dynamic ports inside the process (no host port forwarding
+  needed). Verified empirically: `dotnet build` clean + the M1 unit tests pass inside the container
+  (recorded in 08). SDK was `8.0.421`, satisfying `global.json` `latestFeature`.
+- **Setup pitfalls encountered & resolved (so the committed config is correct):**
+  - `sudo apt-get …` fails under `--cap-drop=ALL` (`sudo: unable to change to root gid: Operation not
+    permitted`). → removed from `postCreateCommand`; `sqlite3` is unneeded until Phase 2 (disk persistence),
+    and if needed later it should be installed via a dev-container *feature* (build phase, before cap-drop),
+    not `sudo`.
+  - The Antigravity CLI is **not an npm package** — `npm install -g @google/antigravity-cli` returns
+    **E404** (no such package). The official install is a script:
+    `curl -fsSL https://antigravity.google/cli/install.sh | bash`. (Third-party npm packages named
+    "antigravity-cli" are unofficial and were avoided.) Made the install step non-fatal (`|| echo WARN…`)
+    so a network/egress hiccup doesn't break the whole container build.
+  - `chmod` on hook files fails (ownership) → handled via git, see FIX-007.
+  - Cleared the stale `5001/https` port mapping — this project's broker is plaintext **h2c on 5050**, and
+    TLS only arrives in M4; the integration test needs no forwarded port at all.
+- **Auth note:** the CLI authenticates via the system keyring and falls back to Google sign-in; the
+  container keyring is separate from the host, so **a fresh login is required inside the container** (and
+  after any rebuild). It detects remote/SSH-style sessions and prints an auth URL to open on the host, so
+  no callback port forwarding is needed.
+- **Future impact:** the final `postCreateCommand` = register `.githooks` hook path → `dotnet restore` →
+  install Antigravity CLI (non-fatal). M2 onward runs in this container. Rebuilding the container is also
+  the real test that the committed config bootstraps cleanly from scratch.
+
+## DEC-010 — Bind-mount UID mismatch breaks `obj/` writes (build) and `chmod` (hooks)
+- **Milestone/Step:** post-M1 (dev-container setup) — environment note
+- **Type:** environment/tooling note
+- **Symptom:** Inside the container, `dotnet build` failed for the two most-edited projects with
+  `MSB3374: … '…/obj/.../*.Up2Date' … Access … is denied`, and `chmod` on hook files returned
+  `Operation not permitted`.
+- **Cause:** the workspace is a **host bind mount**; the mounted files are owned by UID 0 (root) with 777
+  perms (a Windows-host mount signature), while the container user is `vscode` (UID 1000). MSBuild's
+  incremental `*.Up2Date` markers, left over from a prior host build, were root-owned, so `vscode` could
+  not update their timestamps; and `vscode` cannot `chmod` files it doesn't own.
+- **Fix:** delete stale build output (`find . -type d \( -name bin -o -name obj \) | xargs rm -rf`) so the
+  container regenerates `bin/`/`obj/` under `vscode` ownership — build + unit tests then pass. The exec-bit
+  problem is solved via git, not chmod (FIX-007).
+- **Future impact:** **build only inside the container** from now on (a host-side `dotnet build` would
+  re-introduce foreign-UID `obj/`). If this recurs or becomes annoying, the clean structural fix is to use
+  *Clone Repository in Container Volume* (a named volume checked out as `vscode`), which eliminates the
+  bind-mount ownership class of problems entirely. Not a code defect; an environment artifact.
+
+## FIX-008 — Integration test could hang instead of failing on timeout
+- **Milestone/Step:** M1 zoom-out review (post-M1, before merge) → fixed
+- **Severity:** test robustness defect (never fires on the happy path; only when the e2e test is already
+  failing) — not a production-code bug
+- **Symptom:** In `PublishSubscribeE2ETests`, if the message never flows within the 10s timeout, the retry
+  loop exits on `cts.IsCancellationRequested`, but the next line `await received.Task` then awaits a
+  `TaskCompletionSource` that is never completed in the failure path → the test **hangs** instead of failing
+  cleanly. In CI this stalls the job until the outer timeout rather than reporting a clean failure.
+- **Cause:** the completion source is only set on success (`received.TrySetResult` inside the subscribe
+  pump); the failure/timeout branch has no path that completes or cancels `received.Task` before it is awaited.
+- **Fix:** `var got = await received.Task.WaitAsync(cts.Token);` — on timeout this throws
+  `OperationCanceledException`, turning a hang into a clean, fast failure. One-line change, behavior of the
+  passing path unchanged.
+- **Future impact:** none for production. Carry the same `.WaitAsync(token)` habit into M3/M4 integration
+  tests (ack/nack, mTLS) where waits on completion sources recur. Found by the zoom-out review (the only
+  real defect of M1's review).
+
+## DEC-011 — M1 end-of-milestone zoom-out review: outcome & dispositions
+- **Milestone/Step:** M1 zoom-out review (03 §7.5), run via the Antigravity CLI inside the dev container
+- **Type:** review record (one of 09's input sources, per 03 §7.5)
+- **Context:** CLI produced a clean three-bucket report (report-only, no edits — protocol respected).
+  Findings were assessed by the user (+ design review); dispositions below.
+- **Fixed now (approved):**
+  - `[correctness/bug]` integration-test hang → **FIX-008** (`.WaitAsync(cts.Token)`).
+  - `[consistency/cleanup]` unused `Microsoft.AspNetCore.Mvc.Testing` → **removed** (closes the FIX-005
+    "decide at zoom-out" candidate; confirmed unreferenced after the direct-`WebApplication` hosting change).
+  - `[consistency/cleanup]` Korean comments still present in `PublishSubscribeE2ETests.cs` and
+    `BrokerAppFactory.cs` → **translated to English** (repo English-only policy, 05).
+- **Recorded only, not fixed now:**
+  - Unit tests retrieve `GetAsyncEnumerator()` without `await using`, so `SubscribeAsync`'s `finally`
+    (subscriber removal + channel Complete, FIX-003) doesn't run at test end. The CLI classified this as
+    `[correctness/bug]`; **reclassified to `[consistency/cleanup]`** — each test uses a fresh
+    `InMemoryTopicStore` that is GC'd at method end, so it is test-local untidiness, not a process leak, and
+    production code is unaffected. Deferred (would touch ~7 tests; the "fix only 1–2" rule applies). If
+    addressed later: one commit, `await using var enumerator = …`, plus add `using` to the two bare
+    `CancellationTokenSource`s in `Unsubscribe_CleansUpAndOthersStillWork`.
+  - `IntegrationTests.csproj` package versions are uneven (`Microsoft.NET.Test.Sdk` 17.8.0 is old);
+    **note only**, out of M1 scope. Separately, **FluentAssertions 8.x moved to a commercial license** —
+    flag for license review given the portfolio/open-source intent (assess before any public release).
+- **Deferred to investigation (not deleted):**
+  - Reported leftover `UnitTest1.cs` (LoadTests) and `Class1.cs` (Observability, Security). The CLI gave no
+    full paths and may have inferred them from common templates. **Do not delete blindly:** the Phase 0
+    instruction keeps a *placeholder passing test* so empty test projects keep the pre-commit hook working —
+    a "leftover" `UnitTest1.cs` may be that placeholder. Verify each file's path/contents/role first, then
+    decide. Empty skeleton `Class1.cs` are likely safe to delete but confirm they're truly unreferenced.
+- **Correctly out-of-scope (guardrail worked):** Broker/Client references to the empty `Flumewright.Security`
+  / `Flumewright.Observability` projects were classified `[out-of-scope — record only]` (M4 mTLS / M6
+  observability) — the CLI did NOT misflag these intentionally-staged skeletons as defects.
+- **Process note:** the report-only protocol + the 09 "intentionally-deferred" guardrail both held — the CLI
+  proposed no M2+ work and re-flagged none of the deferred items. The CLI *over-escalated* one severity
+  (enumerator dispose → "bug"), which the human review corrected — exactly the 08 principle that a CLI report
+  is a starting point, not a conclusion.
