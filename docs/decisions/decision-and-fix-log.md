@@ -375,12 +375,15 @@
   - `IntegrationTests.csproj` package versions are uneven (`Microsoft.NET.Test.Sdk` 17.8.0 is old);
     **note only**, out of M1 scope. Separately, **FluentAssertions 8.x moved to a commercial license** —
     flag for license review given the portfolio/open-source intent (assess before any public release).
-- **Deferred to investigation (not deleted):**
-  - Reported leftover `UnitTest1.cs` (LoadTests) and `Class1.cs` (Observability, Security). The CLI gave no
-    full paths and may have inferred them from common templates. **Do not delete blindly:** the Phase 0
-    instruction keeps a *placeholder passing test* so empty test projects keep the pre-commit hook working —
-    a "leftover" `UnitTest1.cs` may be that placeholder. Verify each file's path/contents/role first, then
-    decide. Empty skeleton `Class1.cs` are likely safe to delete but confirm they're truly unreferenced.
+- **Investigation resolved → all three KEPT (the CLI's "delete" suggestions were false positives):**
+  - `src/Flumewright.Observability/Class1.cs` and `src/Flumewright.Security/Class1.cs` — each is the sole
+    file in its project, an intentional staged skeleton (M6 observability / M4 mTLS), and is **referenced by
+    Broker/Client**. Deleting would break the build. Kept.
+  - `tests/Flumewright.LoadTests/UnitTest1.cs` — the **deliberate placeholder test** (Phase 0 rule: an empty
+    test project keeps a placeholder so `dotnet test --filter Category=Load` doesn't error on zero tests).
+    Kept. The CLI's original `[consistency/cleanup] → delete` was wrong; verifying contents/role first (per
+    this entry) prevented a build/test break — another instance of "a CLI report is a starting point, not a
+    conclusion" (08).
 - **Correctly out-of-scope (guardrail worked):** Broker/Client references to the empty `Flumewright.Security`
   / `Flumewright.Observability` projects were classified `[out-of-scope — record only]` (M4 mTLS / M6
   observability) — the CLI did NOT misflag these intentionally-staged skeletons as defects.
@@ -388,3 +391,35 @@
   proposed no M2+ work and re-flagged none of the deferred items. The CLI *over-escalated* one severity
   (enumerator dispose → "bug"), which the human review corrected — exactly the 08 principle that a CLI report
   is a starting point, not a conclusion.
+
+## DEC-012 — main branch protection enabled via GitHub ruleset
+- **Milestone/Step:** M1 close (the merge step) — fulfills 03 §5.4, which had not yet been applied
+- **Type:** process/infrastructure decision
+- **Decision:** Protect `main` with a GitHub **ruleset** (the modern replacement for classic branch
+  protection), Enforcement = **Active**, empty bypass list (the rule applies to the owner too — no
+  self-exemption). Rules: **require status check `build-and-test`** to pass before merging; require a pull
+  request before merging; **block force pushes**; **restrict deletions**. "Require branches up to date" =
+  off (solo; avoids needless friction). "Do not require status checks on creation" = on (so tag/branch
+  creation — e.g. the future `v0.1.0` push that triggers `release.yml` — isn't blocked by having no check).
+- **Rationale:** makes the CI gate structurally unbypassable (03 §5 "a human forgetting cannot bypass it").
+  An empty bypass list is deliberate — self-exemption would defeat the point and contradict the
+  "agent/owner under control" stance. Block-force-push protects the auditable history that the whole
+  commit-discipline rests on (note: history rewrites like FIX-006's reset are safe only pre-push/local; on
+  shared `main` they're forbidden — this rule enforces that boundary).
+- **Sequencing note:** the required check `build-and-test` only appears in the ruleset picker after CI has
+  run at least once, so the order is: push → PR → CI runs once → add the check to the ruleset.
+- **Future impact:** every M2+ merge to main now requires green CI. The `release.yml` tag-push flow
+  (Phase 1 end) still works because of the on-creation exemption.
+
+## M1 — milestone closed
+- **Milestone/Step:** M1 (Phase 1, milestone 1 of 6)
+- **What:** all M1 wrap-up steps complete — zoom-out review (DEC-011) + approved fixes (FIX-008, Mvc.Testing
+  removal, Korean-comment translation), docs/ sync, pre-commit exec-bit fix (FIX-007, committed within
+  `chore(devcontainer)` 8148757), dev container adoption (DEC-009/010), and main branch protection
+  (DEC-012). Local `dotnet build -c Release` + `dotnet test --filter "Category!=Load"` green; PR merged to
+  main via a **merge commit** (not squash — preserves the per-unit commit history that 03 §1 depends on).
+- **NOT done (intentionally):** no `v0.1.0` tag — that is the **Phase 1** release marker (after M6), not a
+  per-milestone action. M1 is one of six milestones in Phase 1.
+- **Next:** M2 — topic/partition + bounded channels + routing + multi-threaded consume loops (01 roadmap §14
+  / §5 component "Router/Partitioner" + "Topic/Partition Store"). New branch `feat/m2-partitioning`, new
+  step-by-step instruction doc (`10-phase1-m2-*`).

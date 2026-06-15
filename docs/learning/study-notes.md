@@ -293,9 +293,12 @@ Topic "orders" ──┤
   coexist on one topic.
 
 ### Flumewright Stages
-- Phase 1: skeleton — per-partition queues, key→partition routing, in-group assignment+distribution
-  (starting static).
-- Phase 2: rebalancing maturity — dynamic reassignment on member join/leave, safe handover.
+- **M2 (partitioning):** topic→N partitions, key→partition routing (hash; round-robin if no key),
+  per-partition offset + bounded channel, parallel per-partition consume loops. A subscriber receives ALL
+  of a topic's partitions at this stage. Partition count is fixed per topic.
+- **M3 (consumer group):** in-group partition assignment + distribution (static first) — group members
+  split the topic's partitions. This is built ON TOP OF M2 and is a separate milestone, not part of M2.
+- **Phase 2:** rebalancing maturity — dynamic reassignment on member join/leave, safe handover.
 
 ---
 

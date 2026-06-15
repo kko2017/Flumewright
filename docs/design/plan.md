@@ -1,4 +1,4 @@
-# Distributed Message Bus — Execution Plan v0.5
+# Distributed Message Bus — Execution Plan v0.6
 
 > Codename: **Flumewright** (short alias: **fw** — used in the proto package `fw.v1`, etc.)
 > Stack: C# / .NET 8.0 (LTS) / gRPC (HTTP/2) / Protobuf
@@ -98,7 +98,8 @@ The broker **never deserializes** user message content.
 
 | Feature | Phase 1 | Phase 2 | Notes |
 |---------|---------|---------|-------|
-| Consumer group / partitioning | Skeleton required | Rebalancing maturity | Per-partition ordering, in-group load balancing |
+| Partitioning | **M2** — topic→N partitions, hash/round-robin routing, per-partition offset + bounded channel, parallel consume loops | (count change) | Per-partition ordering; partition count fixed per topic in Phase 1 |
+| Consumer group | **M3** — in-group partition assignment + distribution (static) | Rebalancing maturity | Splits a topic across group members; built on top of M2's partitions, NOT part of M2 |
 | mTLS certificate security | ✅ Required | Cert rotation / CRL | Mutual authentication |
 | Schema Registry | Minimal interface only | Full implementation (validation/compatibility) | Payload stays opaque; schema_id offers optional type safety |
 | Observability (Metrics/Tracing/Logging) | Basic metrics + structured logging | Distributed tracing (OpenTelemetry) | Prometheus-compatible metrics recommended. Logging: **Serilog** behind `Microsoft.Extensions.Logging` (`ILogger<T>`), rolling file sink (daily + size cap + retention). Wired at M6; revisit async sink (`Serilog.Sinks.Async`) at M5/M6 for the 100K hot path. Phase 0 only: `.gitignore` `logs/` and `*.log`. |
@@ -408,3 +409,4 @@ docs/
 | v0.3 | Added Section 7.1 — mandatory certgen checklist for M4 (CA BasicConstraints, broker SAN incl. localhost, client EKU clientAuth, single CA chain); leaning toward a .NET console tool; Phase 0 must .gitignore certs/keys. Cross-linked from the M4 roadmap item. Logging decision: Serilog behind MEL with rolling file sink (wired at M6, async sink revisited at M5/M6); Phase 0 .gitignores logs/ and *.log. Detailed Phase 0 Ch.3 root-config decisions (gitignore certs+logs, global.json SDK pin, Directory.Build.props warnings-as-errors). |
 | v0.4 | Added staging note to §10.2 (DEC-007) — M1's integration test starts in-process (real-port Kestrel) with a single message; separate-process/mTLS e2e is the final form at M4/M5. M1's bar is "one message through". |
 | v0.5 | M1 Step 5 done (e2e integration test passes → M1 functional phase complete). Refined §10.2 with the implementation note: the in-process host is built directly via `WebApplication` in an `IAsyncLifetime` fixture, not `WebApplicationFactory` (which conflicts with the real-Kestrel `Program.cs`); bind `IPAddress.Loopback:0` for a dynamic h2c port; the `Http2UnencryptedSupport` switch is unnecessary on .NET 8 (decision-and-fix-log FIX-005 / DEC-008). |
+| v0.6 | M1 milestone closed (merged to main via merge commit; no tag — that is the Phase 1/M6 marker). M1 wrap: dev container adoption (DEC-009/010), pre-commit exec-bit fix (FIX-007), zoom-out review (DEC-011), main branch-protection ruleset (DEC-012). **Clarified the M2/M3 split in §4:** partitioning is M2 (topic→N partitions, routing, per-partition offset + bounded channel, parallel consume loops; a subscriber gets all partitions; count fixed per topic), consumer-group distribution is M3 (built on top of M2) — previously bundled as one "skeleton" row. Bounded-channel backpressure signaling stays in M5 (FIX-002). |
