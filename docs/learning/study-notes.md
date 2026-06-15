@@ -361,6 +361,227 @@ Calling unary once per message for 100K collapses under connection/handshake ove
 
 ---
 
+## 11.5 .NET Implementation Concepts: DI & Resource Management (Dispose)
+
+> Not message-bus "concepts", but the two key .NET tools used to **build** one — with how Flumewright
+> actually uses them.
+
+### Dependency Injection (DI)
+**What:** a class receives its dependencies **injected** from outside (a container) rather than
+creating them with `new`. .NET Core/8 ships a built-in `Microsoft.Extensions.DependencyInjection`
+container — no extra library needed.
+
+**The point is "depend on interfaces":** the consumer takes an interface; the concrete type is chosen
+at registration.
+```csharp
+builder.Services.AddSingleton<ITopicStore, InMemoryTopicStore>();   // implementation chosen here
+public MessageBusService(ITopicStore store) { ... }                 // consumer knows only the interface
+```
+
+**Three lifetimes:**
+| Lifetime | Meaning | Example |
+|----------|---------|---------|
+| Singleton | one per process | `ITopicStore` (shared in-memory state) |
+| Scoped | one per request/scope | per-request context |
+| Transient | new every time | lightweight stateless helpers |
+
+**Pros:** loose coupling (swap an implementation in one line) · testability (inject fakes) · automatic
+lifetime management.
+**Watch-outs:** a missing registration fails at **runtime** (compiler won't catch it). **Captive
+dependency** — a Singleton must not capture a Scoped service (lifetime-mismatch bug).
+
+**Flumewright usage:** depending on `ITopicStore` lets Phase 2 swap `InMemoryTopicStore` →
+`DiskTopicStore` (WAL) **without touching consumers** — the mechanism behind "three independent axes"
+(swap persistence alone). (Decision: 09 DEC-005)
+
+### Resource management: GC and Dispose
+**What GC does:** reclaims managed memory automatically.
+**What GC doesn't:** unmanaged resources (file handles, sockets, certificates) aren't promptly cleaned
+by GC → they need **explicit release**.
+
+**The Dispose pattern:** a class holding such resources implements `IDisposable.Dispose()` (or async
+`IAsyncDisposable.DisposeAsync()`), and the user calls it at the right time. Two mechanisms automate
+*when*:
+- **`using`** — `using var s = new DiskTopicStore();` → `Dispose()` at end of scope.
+- **DI container auto-dispose** — if a registered implementation is `IDisposable`, the container calls
+  `Dispose()` automatically at app shutdown (Singleton) / request end (Scoped). You don't call it yourself.
+
+**When it's needed (signals):** ① the class holds an `IDisposable` member (`FileStream`,
+`X509Certificate2`, …), or ② it grabs a native handle directly. Neither → no Dispose needed.
+
+**Full pattern vs simplified:** the *full* `Dispose(bool) + ~Finalizer + GC.SuppressFinalize` pattern
+is only needed when **holding a native handle directly**. If you merely hold .NET types that are
+already `IDisposable`, a **simplified** form (no finalizer; `Dispose()` releases members; `sealed`
+class) is enough. Over-using the full pattern only adds complexity.
+
+**Flumewright usage (by milestone):**
+- **M1 (now):** `InMemoryTopicStore` holds only managed channels → no `IDisposable`. Just complete the
+  channel `Writer.Complete()` on unsubscribe for clean teardown (FIX-003).
+- **M3:** redelivery timers / `CancellationTokenSource` → release via `IDisposable`.
+- **M4:** `X509Certificate2` is `IDisposable` → must dispose.
+- **Phase 2:** disk WAL `FileStream`/segment handles → disposal mandatory. `DiskTopicStore` implements
+  `IDisposable`/`IAsyncDisposable` → **the DI container calls it at shutdown** (you build the Dispose;
+  the container calls it).
+(Decision: 09 DEC-006)
+
+---
+
+## 11.6 .NET implementation concepts: integration testing & gRPC networking
+
+> Concepts learned by actually hitting them in M1 Step 5 (the integration test). Not message-bus "concepts"
+> per se, but essential tools for **testing and network-connecting** a gRPC service. The process went
+> through a 5-error cascade (09 FIX-005); each error was, in hindsight, a signal that one concept below was
+> missing.
+
+### ① Why gRPC requires HTTP/2 + h2c (plaintext HTTP/2)
+**Concept:** gRPC uses **HTTP/2** as its transport (multiplexed streams, header compression, and
+bidirectional streaming underpin gRPC's streaming RPCs). gRPC does not work over HTTP/1.1.
+
+**What h2c is:** "HTTP/2 cleartext" — HTTP/2 **without TLS**. HTTP/2 is usually paired with TLS (browsers
+only allow h2 over TLS), but plaintext h2c is possible for internal server-to-server traffic. Since there's
+no TLS negotiation (ALPN) to agree on "HTTP/2 from here", **both server and client must declare "this is
+h2c" explicitly**.
+```csharp
+// Server (Kestrel): this port speaks plaintext HTTP/2
+options.Listen(IPAddress.Loopback, 0, l => l.Protocols = HttpProtocols.Http2);
+```
+**Conclusion on .NET 8:** the client (`GrpcChannel.ForAddress("http://...")`) recognizes h2c from the
+`http://` scheme alone. Older runtimes needed the `AppContext.SetSwitch("...Http2UnencryptedSupport", true)`
+switch, but on **.NET 8 it is unnecessary** (confirmed as 09 DEC-008). M1 is plaintext; once M4 moves to
+mTLS, h2c disappears.
+
+### ② Integration testing: in-memory TestServer vs real-port Kestrel
+The standard tool for ASP.NET Core integration tests is `WebApplicationFactory<T>`, which by default spins
+up an **in-memory `TestServer`** — it opens no real socket and handles requests in memory via an
+`HttpMessageHandler` (fast, no port contention).
+
+**The problem:** our SDK (`FlumewrightPublisher/Subscriber`) opens a socket on a **real port** via
+`GrpcChannel.ForAddress("http://host:port")`. That doesn't match the in-memory handler. So the integration
+test must run a **real-port Kestrel** for the SDK to connect as-is.
+
+**The trap learned (09 FIX-005):** `WebApplicationFactory<Program>` runs our `Program.cs`, intercepts the
+host builder, then tries to **overlay its in-memory TestServer**. But our `Program.cs` is already a
+**complete real-Kestrel host**, so the two conflict and throw `InvalidCastException`
+(KestrelServerImpl→TestServer). Waking it via `.Server` or `.Services` fails at the same place
+(`EnsureServer()`).
+→ **Resolution:** drop `WebApplicationFactory` and have the test fixture **build/start the host directly**
+with `WebApplication.CreateBuilder()`. That avoids the in-memory path entirely.
+
+**Why in-process still counts:** even without spawning a separate OS process, SDK→Kestrel traverses a real
+TCP socket and the HTTP/2 stack. That's sufficient to prove "one message crosses the network" (09 DEC-007).
+True process separation is handled by the M5 load tests.
+
+### ③ Binding address vs connect-target address (0.0.0.0 ≠ 127.0.0.1)
+**Concept:** what looks like the same "IP address" plays different roles.
+- **`0.0.0.0` (IPv4) / `[::]` (IPv6) = "unspecified address":** when a server **listens**, this means
+  "accept on all network interfaces of this machine". `ListenAnyIP` uses it. It is a **listen-only wildcard**.
+- **`127.0.0.1` = loopback:** a **concrete connect-target** address meaning "this machine itself".
+
+**The trap:** starting the server with `ListenAnyIP(0)` makes `IServerAddressesFeature` return
+`http://0.0.0.0:{port}`. Using that as the gRPC client's target throws `0.0.0.0 cannot be used as a target
+address` — because **"everywhere" cannot be a connection destination**. A client must aim at a specific spot.
+→ **Resolution:** bind the server to `IPAddress.Loopback` (127.0.0.1) so the address comes back as
+`http://127.0.0.1:{port}` the client connects to directly. (A defensive `0.0.0.0`→`127.0.0.1` replacement
+can also be kept.)
+
+### ④ Dynamic port (port 0)
+**Concept:** binding with port **0** tells the OS to **auto-assign a free port** (an ephemeral port).
+Especially useful in tests — a fixed port (5050) collides with parallel tests or an already-running broker,
+whereas port 0 gets a fresh free port every time, eliminating contention. Read the actual assigned number
+after startup via `IServerAddressesFeature`.
+
+**The trap:** Kestrel **forbids** `ListenLocalhost(0)` (dynamic port + localhost). `localhost` resolves to
+both IPv4 (`127.0.0.1`) and IPv6 (`::1`); with port 0, the two stacks would get **different ports**, making
+"which port?" ambiguous. The error itself states the fix: bind `127.0.0.1:0` or `[::1]:0`.
+→ **Resolution:** `options.Listen(IPAddress.Loopback, 0, ...)` — one stack (IPv4 loopback), dynamic port, no
+ambiguity.
+
+### ⑤ Test fixture lifecycle: IClassFixture + IAsyncLifetime
+**Concept:** in xUnit, when multiple tests need to **share an expensive resource** (here, a started broker
+host), use a fixture.
+- **`IClassFixture<T>`:** all tests in a test class share a **single** `T` instance (created once per class),
+  injected via the constructor. Avoids re-spinning the broker for every test.
+- **`IAsyncLifetime`:** the interface for **async setup/teardown** of a fixture/test. xUnit auto-calls
+  `InitializeAsync()` (before) and `DisposeAsync()` (after). Broker startup is async
+  (`await _app.StartAsync()`), which a (synchronous) constructor can't do — so `InitializeAsync` is the right
+  place. Teardown (`await _app.DisposeAsync()`) is async too.
+
+```csharp
+public sealed class BrokerAppFactory : IAsyncLifetime
+{
+    private WebApplication? _app;
+    public string Address { get; private set; } = "";
+    public async Task InitializeAsync() { /* build → StartAsync → read address */ }
+    public async Task DisposeAsync()    { if (_app is not null) await _app.DisposeAsync(); }
+}
+```
+This pattern is the clean container for ②'s "direct startup". (DEC-006's disposal habit applies to test
+resources too.)
+
+**Flumewright usage (by phase):** this in-process hosting fixture is the foundation of integration testing.
+Reused in M3 (ack/nack e2e), extended in M4 (mTLS — loopback + certs), and possibly moved to a genuinely
+separate process in M5 (load). (Incident/decisions: 09 FIX-005 · DEC-007 · DEC-008)
+
+---
+
+## 11.7 Dev environment: containers, Linux capabilities & Git file mode
+
+**Why this is here:** development moved into a VS Code **dev container** (09 DEC-009). Three concepts
+came up that are worth understanding, because each caused a concrete failure during setup. None is about
+the message bus itself — they are about the *environment* a distributed system is built and tested in, and
+they recur on any container-based or CI workflow.
+
+### ① Dev container = reproducible, isolated dev environment
+**Concept:** a dev container is a Docker container described by `.devcontainer/devcontainer.json` (committed
+to the repo) that holds the exact toolchain — here `mcr.microsoft.com/devcontainers/dotnet:8.0`. The editor
+attaches *into* the container, so everyone (and CI) builds in the same place.
+- **Why it matters for this project:** CI already runs on `ubuntu-latest`. Developing in a Linux container
+  makes **local == CI**, removing "works on my machine" drift. .NET 8 is cross-platform and all build/test is
+  `dotnet` CLI, so nothing in the project had to change.
+- **Key distinction:** the container isolates **what the agent can *do*** (processes, permissions), not
+  **what files it sees**. With a **bind mount**, the workspace folder is the *same files* as on the host —
+  edit in either place, it's one file. (A "Clone in Container Volume" setup would instead keep files inside
+  the container.)
+
+### ② Linux capabilities — fine-grained root powers
+**Concept:** Linux splits "root's powers" into discrete **capabilities** (e.g. `SETUID`/`SETGID` to change
+user/group, `SYS_PTRACE` to attach a debugger, `AUDIT_WRITE`). A container can drop them to shrink the attack
+surface.
+- **In this config:** `--cap-drop=ALL` drops everything, then `--cap-add=SYS_PTRACE` adds back only what
+  .NET debugging needs. Combined with non-root `vscode`, this is the "limit a misbehaving agent" stance.
+- **The trade-off we hit:** with all capabilities dropped, **`sudo` itself can't work** (it needs
+  `SETUID`/`SETGID` to become root) → `sudo: unable to change to root gid: Operation not permitted`. The
+  lesson: install OS packages at **container build time** (via a dev-container *feature*, which runs before
+  the drop) rather than `sudo apt-get` at runtime. (09 DEC-009)
+
+### ③ File ownership across a bind mount (UID mismatch)
+**Concept:** Linux files are owned by a numeric **UID**. A bind-mounted host folder keeps its host
+ownership/permissions inside the container. If the host UID ≠ the container user's UID, the container user
+may not own "its own" files.
+- **What broke:** host-created `obj/` markers were owned by UID 0 (root) while the container user is
+  `vscode` (UID 1000), so `dotnet build` couldn't update them (`MSB3374 … Access … denied`), and `chmod`
+  on a non-owned file failed (`Operation not permitted`). Deleting stale `bin/`/`obj/` (regenerated under
+  `vscode`) fixed the build. (09 DEC-010)
+
+### ④ Git file mode (100644 vs 100755) — the exec bit lives in the repo
+**Concept:** Git tracks a minimal **file mode**: `100644` (normal) or `100755` (executable). The executable
+bit is stored **in the repo index**, not just on your local filesystem — so a script's "runnable" state
+travels with clones.
+- **Why it bit us:** the `pre-commit` hook was committed as `100644`. **Git won't run a non-executable
+  hook**, so the local build+test gate (03 §5.1) could have been silently skipped throughout M1 — even
+  though `core.hooksPath` was set. Likely cause: a Windows host never recorded the exec bit in the index.
+- **The fix (filesystem `chmod` failed due to ③):** `git update-index --chmod=+x .githooks/pre-commit`
+  sets the **index** mode to `100755` regardless of file ownership, then commit. Now any clone on any OS
+  restores the bit. (09 FIX-007)
+- **General lesson:** "a gate that is *configured*" ≠ "a gate that *runs*." The same verify-don't-assume
+  discipline from 08 applies to tooling, not just code.
+
+**Flumewright usage:** this is environment knowledge, not runtime architecture — but it underpins every
+build/test/commit from M2 on. The committed `devcontainer.json` is also a portfolio artifact (reproducible
+environment). (Decisions: 09 DEC-009 · DEC-010 · FIX-007)
+
+---
+
 ## 12. Glossary
 
 | Term | Meaning |
@@ -382,6 +603,11 @@ Calling unary once per message for 100K collapses under connection/handshake ove
 | CA | The root of trust that signs/issues certificates (Certificate Authority) |
 | Opaque payload | Opaque bytes whose content the broker does not interpret |
 | Fan-out | Spreading one message to many subscribers (broadcast) |
+| Dev container | A Docker-based, reproducible dev environment defined by `.devcontainer/` and committed to the repo |
+| Linux capability | A discrete slice of root's privileges (e.g. SETUID, SYS_PTRACE) that a container can grant or drop |
+| Bind mount | Mounting a host folder into a container so both see the *same* files (vs an isolated volume) |
+| UID | Numeric Linux user id; a bind-mount UID mismatch can make the container user unable to write "its own" files |
+| Git file mode | The exec bit Git stores in the index (`100644` normal / `100755` executable), carried across clones |
 
 ---
 

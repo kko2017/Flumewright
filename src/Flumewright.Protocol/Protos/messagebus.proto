@@ -1,0 +1,36 @@
+syntax = "proto3";
+package fw.v1;
+option csharp_namespace = "Flumewright.Protocol";
+
+service MessageBus {
+  // M1: unary publish (streaming deferred to M5). Ack/Admin deferred to M3.
+  rpc Publish(PublishEnvelope) returns (PublishAck);
+  // M1: server-streaming subscribe — the PubSub essence, kept from the start.
+  rpc Subscribe(SubscribeRequest) returns (stream DeliverEnvelope);
+}
+
+message PublishEnvelope {
+  string topic = 1;
+  map<string, string> headers = 2;   // content-type, schema_id, etc.
+  bytes  payload = 3;                 // opaque — broker never deserializes (ADR 0001)
+  string client_msg_id = 4;
+}
+
+message PublishAck {
+  string client_msg_id = 1;
+  string topic = 2;
+  int64  offset = 3;
+  bool   accepted = 4;
+  string error = 5;
+}
+
+message SubscribeRequest {
+  string topic = 1;
+}
+
+message DeliverEnvelope {
+  string topic = 1;
+  int64  offset = 2;
+  map<string, string> headers = 3;
+  bytes  payload = 4;
+}

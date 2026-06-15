@@ -1,0 +1,41 @@
+// For format details, see https://aka.ms. For config options, see the
+// README at: https://github.com
+{
+    "name": "C# (.NET) - Antigravity Sandbox",
+    "image": "mcr.microsoft.com/devcontainers/dotnet:8.0",
+
+    // [Security Config] Protects the host system while allowing essential development capabilities like debugging
+    "runArgs": [
+        "--cap-drop=ALL",
+        "--cap-add=SYS_PTRACE",
+        "--security-opt", "seccomp=unconfined"
+    ],
+
+    // [Features] Safely injects the SQLite3 CLI and Node.js environment required to run the Antigravity CLI
+    "features": {
+        "ghcr.io/devcontainers/features/node:1": {
+            "version": "lts"
+        }
+    },
+
+    // [Lifecycle Scripts] Run once after the container is created, strictly inside the
+    // isolated Linux container:
+    //   1. Register the repo's version-controlled git hooks path (.githooks) so the
+    //      pre-commit build/test gate is active.
+    //   2. Restore .NET dependencies.
+    //   3. Install the Google Antigravity CLI via its official script (npm has no such
+    //      package). Failure is non-fatal — it only warns, so a network/egress issue
+    //      won't break container setup; install manually if it fails.
+    "postCreateCommand": "git config core.hooksPath .githooks && dotnet restore && (curl -fsSL https://antigravity.google/cli/install.sh | bash || echo 'WARN: antigravity CLI install failed — install manually')",
+
+    // [Port Forwarding] Local port mapping configuration for application testing
+    "forwardPorts": [],
+    "portsAttributes": {
+        // "5001": {
+        //     "protocol": "https"
+        // }
+    },
+
+    // [User Context] Runs as a standard non-root user ('vscode') to minimize potential damage from any AI agent misbehavior
+    "remoteUser": "vscode"
+}

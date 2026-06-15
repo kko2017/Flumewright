@@ -2,12 +2,30 @@
 
 > A distributed message bus — a high-throughput PubSub infrastructure built on C# / .NET 8 / gRPC.
 
-[![CI](https://github.com/<USERNAME>/Flumewright/actions/workflows/ci.yml/badge.svg)](https://github.com/<USERNAME>/Flumewright/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-TBD-lightgrey.svg)](LICENSE)
+![C#](https://img.shields.io/badge/C%23-239120?logo=csharp&logoColor=white)
+![.NET 8](https://img.shields.io/badge/.NET%208-512BD4?logo=dotnet&logoColor=white)
+![gRPC](https://img.shields.io/badge/gRPC-2496ED?logo=grpc&logoColor=white)
+![Protobuf](https://img.shields.io/badge/Protobuf-EA4C89?logo=protobuf&logoColor=white)
 
 Flumewright is a high-throughput message bus where a standalone **Broker** process mediates
 communication between **Publisher** and **Subscriber** processes over mTLS-secured gRPC,
 following the publish-subscribe pattern.
+
+---
+
+## 🤖 Built with AI — under human control
+
+Flumewright was built using an **agent-assisted workflow** (Claude for planning, design, and code
+review; Gemini CLI for implementation), with the human owning all architecture, verification, and
+decisions. Work was delegated in small, scoped, individually-verified steps; every design choice and
+fix is recorded; total tooling cost was kept **under $60/month**.
+
+This is *assisted*, not autonomous: the AI never pushes to remote, never decides scope, and every
+proposal is approved or rejected by a human. Hand code-review caught real defects the AI had reported
+as passing tests (see the decision-and-fix log).
+
+See **[AI Collaboration & Cost Strategy](docs/ai-collaboration.md)** for the full model — control
+mechanisms, verification discipline, and cost strategy.
 
 ---
 
@@ -124,6 +142,7 @@ See [docs/guides/version-control-and-validation-guide.md](docs/guides/version-co
 - [Execution Plan](docs/design/plan.md)
 - [Message Bus & PubSub Study Notes](docs/learning/study-notes.md)
 - [Version Control & Validation Guide](docs/guides/version-control-and-validation-guide.md)
+- [AI Collaboration & Cost Strategy](docs/ai-collaboration.md)
 - [Architecture Decision Records (ADR)](docs/decisions/)
 
 ---
