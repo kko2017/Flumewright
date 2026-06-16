@@ -444,3 +444,38 @@
 - **Future impact:** every milestone instruction (`NN-phaseX-mN-*`) marks where checkpoints fall; density
   scales with risk (M2 concurrency = tighter; M6 wiring = looser). Pairs with §7.5 zoom-out review (during
   vs end). To be reflected as skills (`checkpoint-review`, `zoomout-review`) once the SKILL.md format is verified.
+
+## DEC-014 — Agent harness: standing rules (GEMINI.md) + workspace skills, replacing per-prompt @-attachments
+- **Milestone/Step:** workflow/tooling decision, after M1 close, before M2 (applies M2 onward)
+- **Type:** process/tooling decision
+- **Decision:** Stop re-attaching the same docs with `@` every prompt. Instead encode the workflow as a
+  file-based harness in the workspace (committed):
+  - **`GEMINI.md`** (repo root) — always-on agent rules, auto-loaded each session: git boundary
+    (local-only, per-file add, `git show --stat` after each commit), work rhythm (one step = one commit,
+    stop on failure/unplanned decision), scope discipline, verification philosophy, environment (English,
+    dev-container builds), and **pointers** to docs/ (not duplicated rules).
+  - **Three workspace skills** under `.agents/skills/{name}/SKILL.md` — `docs-sync`, `zoomout-review`,
+    `checkpoint-review`. Each is on-demand (loaded only when relevant) and is procedure + pointer to the
+    authoritative doc (03 §7.5/§7.6), never a copy of the rules.
+- **Division of labor:** standing rules → GEMINI.md (always applied); task procedures → skills (invoked
+  when relevant). Single source of truth stays in docs/ (03/09); GEMINI.md and skills are summaries +
+  pointers. This avoids the duplicate-content drift that caused an earlier docs-sync to silently delete a
+  whole section (see the 02 study-notes incident) — rules live in one place.
+- **CLI mechanics (verified on Antigravity CLI 1.0.8, in the dev container):**
+  - `GEMINI.md` at the workspace root IS auto-loaded (confirmed by a marker test). `--help` exposes no
+    memory/context/rules subcommands, but loading works regardless. AGENTS.md native support is a later
+    version (≈v1.20.x); on 1.0.8, **GEMINI.md is the reliable workspace context file** (global
+    `~/.gemini/GEMINI.md` is avoided — it conflicts with Gemini CLI).
+  - **Both skills and GEMINI.md are scanned at session start.** After adding/editing either, **restart
+    `agy`** (a 0-skills / stale-rules result almost always means "not restarted").
+  - Skill folder path: `.agents/skills/{name}/SKILL.md`; `name` must equal the folder name; single-line
+    `description` is the safe frontmatter form.
+  - Settings sanity (`/config`): Tool Permission = request-review, Non-Workspace Access = off — control
+    posture intact. Do NOT use `--dangerously-skip-permissions`.
+- **Rationale:** less token waste and no more forgetting a guardrail attachment (e.g. the 09 deferred-items
+  list for a zoom-out). The harness keeps the human as approver and the control mechanisms intact — it
+  automates *delivery* of the rules, not the loosening of them.
+- **Future impact:** M2 is the first real test of the harness (does GEMINI.md hold the rules; do
+  checkpoint-review / zoomout-review actually fire). Committed under `chore/add-skills` (skills + GEMINI.md)
+  and recorded here. Skills/rules evolve as the workflow does; keep them as pointers so doc changes don't
+  strand a stale copy.
