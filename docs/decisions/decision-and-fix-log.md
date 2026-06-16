@@ -423,3 +423,24 @@
 - **Next:** M2 — topic/partition + bounded channels + routing + multi-threaded consume loops (01 roadmap §14
   / §5 component "Router/Partitioner" + "Topic/Partition Store"). New branch `feat/m2-partitioning`, new
   step-by-step instruction doc (`10-phase1-m2-*`).
+
+## DEC-013 — Risk-based checkpoint verification (replaces per-step hand verification)
+- **Milestone/Step:** workflow decision, before M2 (applies M2 onward)
+- **Type:** process decision
+- **Decision:** Stop hand-verifying every step. Group steps into a few **checkpoints** placed **by risk**,
+  not by step count. The CLI runs up to a checkpoint, STOPS, and self-reports; the human scans the report
+  and spot-checks only the high-risk steps. Full rule + risk taxonomy in 03 §7.6.
+- **Risk taxonomy (must-verify):** ① concurrency/shared-state logic ② public-contract changes
+  (proto/interfaces) ③ milestone completion-bar (integration test) ④ security boundaries (certs/mTLS).
+  Low-risk (groupable): scaffolding, pure test-covered functions, docs/config.
+- **Rationale:** per-step verification doesn't scale across Phase × M × Step and over-spends on low-risk
+  steps; "run to the end then check" is unsafe because a wrong early step compounds (M1 FIX-001/002 were
+  caught exactly at the introducing step). Risk-placed checkpoints keep the human as approver while removing
+  the per-step bottleneck.
+- **Safeguards (so grouping doesn't let bad work pile up):** each step is still its own commit (build+test
+  green) — grouped execution ≠ grouped commit; CLI self-reports per step at the checkpoint; CLI stops
+  immediately on any build/test failure or any unplanned decision; high-risk steps carry a self-check list
+  in the instruction/skill.
+- **Future impact:** every milestone instruction (`NN-phaseX-mN-*`) marks where checkpoints fall; density
+  scales with risk (M2 concurrency = tighter; M6 wiring = looser). Pairs with §7.5 zoom-out review (during
+  vs end). To be reflected as skills (`checkpoint-review`, `zoomout-review`) once the SKILL.md format is verified.

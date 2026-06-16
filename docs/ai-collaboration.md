@@ -39,8 +39,12 @@ things you deferred. The following mechanisms were designed to prevent that.
 
 - **Git boundary.** The CLI may only run *local* git (branch/add/commit). All remote operations
   (push/pull/fetch/remote) are performed by the human. The CLI stops at "Ready to push" and waits.
-- **One small unit at a time.** Work is decomposed into steps; the CLI does one step, builds, commits,
-  and stops. It is explicitly told not to start the next step. This makes every change reviewable.
+- **Small units, risk-based checkpoints.** Work is decomposed into steps; each step is its own
+  built-and-tested commit. Rather than hand-verifying every step (which doesn't scale), steps are grouped
+  into a few **checkpoints placed by risk** — the CLI runs to a checkpoint, stops, and self-reports; the
+  human scans the report and spot-checks the high-risk steps (concurrency/shared-state, public-contract
+  changes, completion-bar tests, security boundaries). The CLI stops immediately on any failure or
+  unplanned decision. This keeps every change reviewable while removing the per-step bottleneck.
 - **Explicit scope fences.** Instructions list what is *deliberately deferred* ("no partitions — that's
   M2; no mTLS — that's M4") and say "do not add them." This stops the agent from pulling future work in.
 - **End-of-milestone zoom-out review.** At each milestone the CLI reviews the whole codebase — but with
