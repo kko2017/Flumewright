@@ -349,6 +349,61 @@ and closed in this order:
 
 ---
 
+## 7.6 Risk-Based Checkpoint Verification (instead of per-step)
+
+Verifying **every** step by hand does not scale across Phase × Milestone × Step, and most of that effort
+is spent on low-risk steps. But "let the AI run and check at the end" is unsafe — a wrong early step
+compounds (M1's FIX-001/002 were both caught at the step that introduced them; if buried under three later
+steps they'd have been 4× costlier to undo). So group steps into a few **checkpoints**, but place the
+boundaries by **risk**, not by step count.
+
+### Classify each step by risk
+**MUST be human-verified at a checkpoint (high-risk):**
+1. **Concurrency / shared-state logic** — channels, offsets, locks, parallel loops. (Every M1 fix lived here.)
+2. **Public contract changes** — proto, public interfaces (`ITopicStore`, SDK surface). A wrong contract makes every later step build on a bad foundation.
+3. **Milestone completion-bar steps** — the integration/e2e test that defines "the milestone works".
+4. **Security boundaries** — certificates, mTLS, auth. One mistake here is catastrophic and easy to miss.
+
+**May be grouped and flowed through (low-risk):**
+- Scaffolding, file moves, configuration.
+- Pure, deterministic functions well covered by unit tests (e.g. a hash router).
+- docs / comments.
+
+### How checkpoints work
+- The CLI runs the steps **up to a checkpoint**, then STOPS and reports. A checkpoint is placed **right after a high-risk step**, not at an arbitrary step count.
+- **Each step is still its own commit** that builds + passes fast tests (§1 unchanged). Grouped *execution* must not become a grouped *commit* — per-step commits keep `git log` traceable and individually revertible at the checkpoint.
+- At each checkpoint the CLI **self-reports**: for each step, what it did and any decision/assumption made. The human scans this rather than re-reading every diff, then spot-checks the high-risk steps against the code.
+- The CLI **stops immediately** (does not flow on) if a build/test fails OR it must make a decision not covered by the plan. No pushing three steps forward on a guess.
+- High-risk steps carry a **self-check list** in the instruction/skill (e.g. for a partition store: "is the offset per-partition independent? is the counter `Interlocked`? does the `TryWrite`-false path keep offset accounting intact?"), so the CLI filters obvious defects before the human looks.
+
+### Checkpoint density varies by milestone
+A concurrency-heavy milestone (e.g. M2 partitioning/parallel consume) deserves tighter checkpoints; a
+low-risk one (e.g. M6 observability wiring) can be grouped more loosely. The milestone instruction
+(`NN-phaseX-mN-*`) marks **where the checkpoints fall** in its step map.
+
+### Flow (per milestone)
+```
+[CLI] run steps up to checkpoint A (each step = its own commit, build+test green)
+      │
+      ▼
+[CLI] checkpoint A self-report (per-step: what + decisions)
+      │
+      ▼
+[human] scan report + spot-check high-risk steps → approve / fix
+      │
+      ▼  (repeat for checkpoint B, …)
+      │
+[CLI] zoom-out review (§7.5) → human review
+      │
+   wrap-up (docs sync, 08/09) → CI green → user merges to main → (Phase end) tag
+```
+
+> This sits alongside §7.5: checkpoints catch issues *during* the milestone (risk-targeted), the zoom-out
+> review catches cross-step issues *at the end* (whole-codebase). Both keep the human as the approver while
+> removing the per-step bottleneck.
+
+---
+
 ## 8. .gitignore Basics (.NET)
 
 ```gitignore
