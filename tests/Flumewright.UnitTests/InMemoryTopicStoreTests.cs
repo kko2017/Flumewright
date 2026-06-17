@@ -1,5 +1,11 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using FluentAssertions;
 using Flumewright.Broker.Core;
+using Xunit;
 
 namespace Flumewright.UnitTests;
 
@@ -9,24 +15,24 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task Publish_AssignsIncreasingOffsets()
     {
-        var store = new InMemoryTopicStore();
+        var store = new InMemoryTopicStore(1, 10000);
         var headers = new Dictionary<string, string>();
         var payload = ReadOnlyMemory<byte>.Empty;
 
-        var offset1 = await store.PublishAsync("topic1", headers, payload);
-        var offset2 = await store.PublishAsync("topic1", headers, payload);
-        var offset3 = await store.PublishAsync("topic1", headers, payload);
+        var res1 = await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
+        var res2 = await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
+        var res3 = await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
 
-        offset1.Should().Be(0);
-        offset2.Should().Be(1);
-        offset3.Should().Be(2);
+        res1.Offset.Should().Be(0);
+        res2.Offset.Should().Be(1);
+        res3.Offset.Should().Be(2);
     }
 
     [Fact]
     [Trait("Category", "Unit")]
     public async Task Subscribe_ReceivesPublishedMessage()
     {
-        var store = new InMemoryTopicStore();
+        var store = new InMemoryTopicStore(1, 10000);
         var headers = new Dictionary<string, string> { ["key"] = "value" };
         var payload = new byte[] { 1, 2, 3 }.AsMemory();
         using var cts = new CancellationTokenSource();
@@ -34,7 +40,7 @@ public class InMemoryTopicStoreTests
         var enumerator = store.SubscribeAsync("topic1", cts.Token).GetAsyncEnumerator(cts.Token);
         var pendingRead = enumerator.MoveNextAsync().AsTask();
 
-        await store.PublishAsync("topic1", headers, payload);
+        await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
 
         var hasNext = await pendingRead;
         hasNext.Should().BeTrue();
@@ -49,17 +55,17 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task Subscribe_LatestSemantics_DropsOldMessages()
     {
-        var store = new InMemoryTopicStore();
+        var store = new InMemoryTopicStore(1, 10000);
         var headers = new Dictionary<string, string>();
         var payload = ReadOnlyMemory<byte>.Empty;
 
-        await store.PublishAsync("topic1", headers, payload);
+        await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
 
         using var cts = new CancellationTokenSource();
         var enumerator = store.SubscribeAsync("topic1", cts.Token).GetAsyncEnumerator(cts.Token);
         var pendingRead = enumerator.MoveNextAsync().AsTask();
 
-        await store.PublishAsync("topic1", headers, payload);
+        await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
 
         var hasNext = await pendingRead;
         hasNext.Should().BeTrue();
@@ -71,7 +77,7 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task Payload_RoundTripsByteExact()
     {
-        var store = new InMemoryTopicStore();
+        var store = new InMemoryTopicStore(1, 10000);
         var headers = new Dictionary<string, string>();
         var payload = new byte[] { 255, 0, 128, 64, 32 }.AsMemory();
         
@@ -79,7 +85,7 @@ public class InMemoryTopicStoreTests
         var enumerator = store.SubscribeAsync("topic1", cts.Token).GetAsyncEnumerator(cts.Token);
         var pendingRead = enumerator.MoveNextAsync().AsTask();
 
-        await store.PublishAsync("topic1", headers, payload);
+        await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
 
         await pendingRead;
         var received = enumerator.Current.Payload;
@@ -91,13 +97,13 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task SeparateTopics_AreIsolated()
     {
-        var store = new InMemoryTopicStore();
+        var store = new InMemoryTopicStore(1, 10000);
         using var cts = new CancellationTokenSource();
         
         var enumeratorA = store.SubscribeAsync("A", cts.Token).GetAsyncEnumerator(cts.Token);
         var pendingReadA = enumeratorA.MoveNextAsync().AsTask();
 
-        await store.PublishAsync("B", new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
+        await store.PublishAsync("B", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
 
         var delayTask = Task.Delay(50);
         var completedTask = await Task.WhenAny(pendingReadA, delayTask);
@@ -109,16 +115,17 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task Offsets_AreUniqueUnderConcurrentPublishes()
     {
-        var store = new InMemoryTopicStore();
+        var store = new InMemoryTopicStore(1, 10000);
         int count = 1000;
-        var tasks = new Task<long>[count];
+        var tasks = new Task<(int, long)>[count];
 
         for (int i = 0; i < count; i++)
         {
-            tasks[i] = store.PublishAsync("topic1", new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty).AsTask();
+            tasks[i] = store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty).AsTask();
         }
 
-        var offsets = await Task.WhenAll(tasks);
+        var results = await Task.WhenAll(tasks);
+        var offsets = results.Select(r => r.Item2).ToArray();
 
         var uniqueOffsets = offsets.Distinct().OrderBy(x => x).ToList();
         uniqueOffsets.Count.Should().Be(count);
@@ -130,7 +137,7 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task FanOut_TwoSubscribersReceiveSameMessage()
     {
-        var store = new InMemoryTopicStore();
+        var store = new InMemoryTopicStore(1, 10000);
         using var cts = new CancellationTokenSource();
 
         var enum1 = store.SubscribeAsync("topic1", cts.Token).GetAsyncEnumerator(cts.Token);
@@ -139,7 +146,7 @@ public class InMemoryTopicStoreTests
         var read1 = enum1.MoveNextAsync().AsTask();
         var read2 = enum2.MoveNextAsync().AsTask();
 
-        await store.PublishAsync("topic1", new Dictionary<string, string>(), new byte[] { 42 }.AsMemory());
+        await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), new byte[] { 42 }.AsMemory());
 
         var hasNext1 = await read1;
         var hasNext2 = await read2;
@@ -157,15 +164,15 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task LateSubscriber_DoesNotGetPreSubscriptionMessages()
     {
-        var store = new InMemoryTopicStore();
+        var store = new InMemoryTopicStore(1, 10000);
         using var cts = new CancellationTokenSource();
 
-        await store.PublishAsync("topic1", new Dictionary<string, string>(), new byte[] { 1 }.AsMemory());
+        await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), new byte[] { 1 }.AsMemory());
 
         var enum1 = store.SubscribeAsync("topic1", cts.Token).GetAsyncEnumerator(cts.Token);
         var read1 = enum1.MoveNextAsync().AsTask();
 
-        await store.PublishAsync("topic1", new Dictionary<string, string>(), new byte[] { 2 }.AsMemory());
+        await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), new byte[] { 2 }.AsMemory());
 
         var hasNext1 = await read1;
         hasNext1.Should().BeTrue();
@@ -178,7 +185,7 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task Unsubscribe_CleansUpAndOthersStillWork()
     {
-        var store = new InMemoryTopicStore();
+        var store = new InMemoryTopicStore(1, 10000);
         
         var cts1 = new CancellationTokenSource();
         var cts2 = new CancellationTokenSource();
@@ -200,11 +207,91 @@ public class InMemoryTopicStoreTests
         catch (OperationCanceledException) { }
 
         // Publish
-        await store.PublishAsync("topic1", new Dictionary<string, string>(), new byte[] { 99 }.AsMemory());
+        await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), new byte[] { 99 }.AsMemory());
 
         // Enum2 should still get it
         var hasNext2 = await read2;
         hasNext2.Should().BeTrue();
         enum2.Current.Payload.ToArray()[0].Should().Be(99);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task SamePartitionKey_LandsInSamePartition_OffsetsIncrease()
+    {
+        var store = new InMemoryTopicStore(4, 10000);
+        var key = new byte[] { 1, 2, 3 }.AsMemory();
+        var headers = new Dictionary<string, string>();
+        var payload = ReadOnlyMemory<byte>.Empty;
+
+        var res1 = await store.PublishAsync("topic1", key, headers, payload);
+        var res2 = await store.PublishAsync("topic1", key, headers, payload);
+
+        res1.Partition.Should().Be(res2.Partition);
+        res1.Offset.Should().Be(0);
+        res2.Offset.Should().Be(1);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task Offsets_ArePerPartitionIndependent()
+    {
+        var store = new InMemoryTopicStore(4, 10000);
+        int? p1 = null;
+        int? p2 = null;
+        byte[] key1 = null!;
+        byte[] key2 = null!;
+        
+        for (byte i = 0; i < 100; i++)
+        {
+            var keyBytes = new byte[] { i };
+            int p = PartitionRouter.ForKey(keyBytes, 4);
+            if (p1 == null)
+            {
+                p1 = p;
+                key1 = keyBytes;
+            }
+            else if (p != p1.Value && p2 == null)
+            {
+                p2 = p;
+                key2 = keyBytes;
+                break;
+            }
+        }
+
+        p1.Should().NotBeNull();
+        p2.Should().NotBeNull();
+        p1.Value.Should().NotBe(p2.Value);
+
+        var headers = new Dictionary<string, string>();
+        var payload = ReadOnlyMemory<byte>.Empty;
+
+        var res1 = await store.PublishAsync("topic1", key1.AsMemory(), headers, payload);
+        var res2 = await store.PublishAsync("topic1", key2.AsMemory(), headers, payload);
+
+        res1.Partition.Should().Be(p1.Value);
+        res1.Offset.Should().Be(0);
+
+        res2.Partition.Should().Be(p2.Value);
+        res2.Offset.Should().Be(0);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task RoundRobin_NoKey_SpreadsAcrossPartitions()
+    {
+        var store = new InMemoryTopicStore(3, 10000);
+        var headers = new Dictionary<string, string>();
+        var payload = ReadOnlyMemory<byte>.Empty;
+
+        var res1 = await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
+        var res2 = await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
+        var res3 = await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
+        var res4 = await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
+
+        var partitions = new[] { res1.Partition, res2.Partition, res3.Partition, res4.Partition };
+        partitions[3].Should().Be(partitions[0]);
+        partitions[1].Should().NotBe(partitions[0]);
+        partitions[2].Should().NotBe(partitions[1]);
     }
 }
