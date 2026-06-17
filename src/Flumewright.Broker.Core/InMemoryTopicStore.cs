@@ -14,7 +14,6 @@ public sealed class InMemoryTopicStore : ITopicStore
     private class Partition
     {
         public int Index { get; }
-        public ConcurrentDictionary<Guid, Channel<StoredMessage>> Subscribers { get; } = new();
         private long _offsetCounter = -1;
         private long _droppedCount = 0;
 
@@ -33,6 +32,7 @@ public sealed class InMemoryTopicStore : ITopicStore
         public Partition[] Partitions { get; }
         private long _rrCounter = -1;
         public int ChannelCapacity { get; }
+        public ConcurrentDictionary<Guid, Channel<StoredMessage>> Subscribers { get; } = new();
 
         public Topic(int partitionCount, int channelCapacity)
         {
@@ -91,7 +91,7 @@ public sealed class InMemoryTopicStore : ITopicStore
         long offset = partition.GetNextOffset();
         var message = new StoredMessage(partitionIndex, offset, headers, payload);
 
-        foreach (var sub in partition.Subscribers.Values)
+        foreach (var sub in topicState.Subscribers.Values)
         {
             bool success = sub.Writer.TryWrite(message);
             if (!success)
@@ -111,64 +111,28 @@ public sealed class InMemoryTopicStore : ITopicStore
         var topicState = _topics.GetOrAdd(topic, _ => new Topic(_defaultPartitionCount, _channelCapacity));
         var subId = Guid.NewGuid();
 
-        var partitionChannels = new Channel<StoredMessage>[topicState.Partitions.Length];
-        for (int i = 0; i < topicState.Partitions.Length; i++)
+        var channel = Channel.CreateBounded<StoredMessage>(new BoundedChannelOptions(topicState.ChannelCapacity)
         {
-            var channel = Channel.CreateBounded<StoredMessage>(new BoundedChannelOptions(topicState.ChannelCapacity)
-            {
-                SingleWriter = false,
-                SingleReader = true,
-                FullMode = BoundedChannelFullMode.DropWrite
-            });
-            partitionChannels[i] = channel;
-            topicState.Partitions[i].Subscribers.TryAdd(subId, channel);
-        }
+            SingleWriter = false,
+            SingleReader = true,
+            FullMode = BoundedChannelFullMode.Wait
+        });
 
-        var mergedChannel = Channel.CreateUnbounded<StoredMessage>();
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var mergeTasks = new List<Task>();
-
-        for (int i = 0; i < topicState.Partitions.Length; i++)
-        {
-            var reader = partitionChannels[i].Reader;
-            mergeTasks.Add(Task.Run(async () =>
-            {
-                try
-                {
-                    await foreach (var msg in reader.ReadAllAsync(cts.Token))
-                    {
-                        await mergedChannel.Writer.WriteAsync(msg, cts.Token);
-                    }
-                }
-                catch (OperationCanceledException) {}
-            }));
-        }
+        topicState.Subscribers.TryAdd(subId, channel);
 
         try
         {
-            await foreach (var msg in mergedChannel.Reader.ReadAllAsync(ct))
+            await foreach (var msg in channel.Reader.ReadAllAsync(ct))
             {
                 yield return msg;
             }
         }
         finally
         {
-            for (int i = 0; i < topicState.Partitions.Length; i++)
+            if (topicState.Subscribers.TryRemove(subId, out var subChannel))
             {
-                if (topicState.Partitions[i].Subscribers.TryRemove(subId, out var channel))
-                {
-                    channel.Writer.Complete();
-                }
+                subChannel.Writer.Complete();
             }
-
-            cts.Cancel();
-            try
-            {
-                await Task.WhenAll(mergeTasks).ConfigureAwait(false);
-            }
-            catch { /* Ignore cancellation errors in task cleanup */ }
-
-            mergedChannel.Writer.Complete();
         }
     }
 

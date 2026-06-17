@@ -294,4 +294,58 @@ public class InMemoryTopicStoreTests
         partitions[1].Should().NotBe(partitions[0]);
         partitions[2].Should().NotBe(partitions[1]);
     }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task SlowSubscriber_DropsMessages_WhenChannelIsFull()
+    {
+        var store = new InMemoryTopicStore(1, 2);
+        var headers = new Dictionary<string, string>();
+        var payload = ReadOnlyMemory<byte>.Empty;
+        using var cts = new CancellationTokenSource();
+
+        var enumerator = store.SubscribeAsync("topic_slow", cts.Token).GetAsyncEnumerator(cts.Token);
+        var pendingRead = enumerator.MoveNextAsync().AsTask();
+
+        // Message 0 will be read immediately by pendingRead
+        var res0 = await store.PublishAsync("topic_slow", ReadOnlyMemory<byte>.Empty, headers, payload);
+        
+        // Wait until the reader has consumed Message 0 and yielded it.
+        // This ensures the channel is empty and the subscriber is suspended (not active).
+        (await pendingRead).Should().BeTrue();
+        enumerator.Current.Offset.Should().Be(0);
+
+        // Publish Message 1 and 2. They will fit in the bounded channel (capacity 2).
+        var res1 = await store.PublishAsync("topic_slow", ReadOnlyMemory<byte>.Empty, headers, payload);
+        var res2 = await store.PublishAsync("topic_slow", ReadOnlyMemory<byte>.Empty, headers, payload);
+        
+        // Message 3 should be dropped because the channel is full (contains Message 1 and 2).
+        var res3 = await store.PublishAsync("topic_slow", ReadOnlyMemory<byte>.Empty, headers, payload);
+
+        res0.Offset.Should().Be(0);
+        res1.Offset.Should().Be(1);
+        res2.Offset.Should().Be(2);
+        res3.Offset.Should().Be(3);
+
+        store.GetDroppedCount("topic_slow", 0).Should().Be(1);
+
+        // Verify we receive Message 1 and 2.
+        (await enumerator.MoveNextAsync()).Should().BeTrue();
+        enumerator.Current.Offset.Should().Be(1);
+
+        (await enumerator.MoveNextAsync()).Should().BeTrue();
+        enumerator.Current.Offset.Should().Be(2);
+
+        var moveNextTask = enumerator.MoveNextAsync().AsTask();
+        var delayTask = Task.Delay(100);
+        var completedTask = await Task.WhenAny(moveNextTask, delayTask);
+        completedTask.Should().Be(delayTask, "No more messages should be available because the fourth was dropped");
+
+        cts.Cancel();
+        try
+        {
+            await moveNextTask;
+        }
+        catch (OperationCanceledException) { }
+    }
 }
