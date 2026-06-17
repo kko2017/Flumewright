@@ -1,9 +1,15 @@
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+
 namespace Flumewright.Broker.Core;
 
 public interface ITopicStore
 {
-    ValueTask<long> PublishAsync(
+    ValueTask<(int Partition, long Offset)> PublishAsync(
         string topic,
+        ReadOnlyMemory<byte> partitionKey,
         IReadOnlyDictionary<string, string> headers,
         ReadOnlyMemory<byte> payload,
         CancellationToken ct = default);
