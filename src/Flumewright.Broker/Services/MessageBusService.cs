@@ -43,7 +43,7 @@ public class MessageBusService : MessageBus.MessageBusBase
     {
         var messages = _topicStore.SubscribeAsync(request.Topic, context.CancellationToken);
 
-        await foreach (var message in messages)
+        await foreach (var message in messages.WithCancellation(context.CancellationToken))
         {
             var envelope = new DeliverEnvelope
             {
@@ -58,7 +58,7 @@ public class MessageBusService : MessageBus.MessageBusBase
                 envelope.Headers[header.Key] = header.Value;
             }
 
-            await responseStream.WriteAsync(envelope);
+            await responseStream.WriteAsync(envelope, context.CancellationToken);
         }
     }
 }
