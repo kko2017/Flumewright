@@ -16,7 +16,7 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task Publish_AssignsIncreasingOffsets()
     {
-        var store = new InMemoryTopicStore(1, 10000);
+        var store = new InMemoryTopicStore(1);
         var headers = new Dictionary<string, string>();
         var payload = ReadOnlyMemory<byte>.Empty;
 
@@ -33,7 +33,7 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task Subscribe_ReceivesPublishedMessage()
     {
-        var store = new InMemoryTopicStore(1, 10000);
+        var store = new InMemoryTopicStore(1);
         var headers = new Dictionary<string, string> { ["key"] = "value" };
         var payload = new byte[] { 1, 2, 3 }.AsMemory();
         using var cts = new CancellationTokenSource();
@@ -56,7 +56,7 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task Subscribe_LatestSemantics_StartsFromEnd()
     {
-        var store = new InMemoryTopicStore(1, 10000);
+        var store = new InMemoryTopicStore(1);
         var headers = new Dictionary<string, string>();
         var payload = ReadOnlyMemory<byte>.Empty;
 
@@ -82,7 +82,7 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task Payload_RoundTripsByteExact()
     {
-        var store = new InMemoryTopicStore(1, 10000);
+        var store = new InMemoryTopicStore(1);
         var headers = new Dictionary<string, string>();
         var payload = new byte[] { 255, 0, 128, 64, 32 }.AsMemory();
         
@@ -102,7 +102,7 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task SeparateTopics_AreIsolated()
     {
-        var store = new InMemoryTopicStore(1, 10000);
+        var store = new InMemoryTopicStore(1);
         using var cts = new CancellationTokenSource();
         
         var enumeratorA = store.SubscribeAsync("A", cts.Token).GetAsyncEnumerator(cts.Token);
@@ -120,7 +120,7 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task Offsets_AreUniqueAndContiguousUnderConcurrentPublishes()
     {
-        var store = new InMemoryTopicStore(1, 10000);
+        var store = new InMemoryTopicStore(1);
         int count = 1000;
         var tasks = new Task<(int, long)>[count];
 
@@ -142,7 +142,7 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task FanOut_TwoSubscribersReceiveSameMessage()
     {
-        var store = new InMemoryTopicStore(1, 10000);
+        var store = new InMemoryTopicStore(1);
         using var cts = new CancellationTokenSource();
 
         var enum1 = store.SubscribeAsync("topic1", cts.Token).GetAsyncEnumerator(cts.Token);
@@ -169,7 +169,7 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task LateSubscriber_DoesNotGetPreSubscriptionMessages()
     {
-        var store = new InMemoryTopicStore(1, 10000);
+        var store = new InMemoryTopicStore(1);
         using var cts = new CancellationTokenSource();
 
         await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), new byte[] { 1 }.AsMemory());
@@ -190,7 +190,7 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task Unsubscribe_CleansUpAndOthersStillWork()
     {
-        var store = new InMemoryTopicStore(1, 10000);
+        var store = new InMemoryTopicStore(1);
         
         var cts1 = new CancellationTokenSource();
         var cts2 = new CancellationTokenSource();
@@ -224,7 +224,7 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task SamePartitionKey_LandsInSamePartition_OffsetsIncrease()
     {
-        var store = new InMemoryTopicStore(4, 10000);
+        var store = new InMemoryTopicStore(4);
         var key = new byte[] { 1, 2, 3 }.AsMemory();
         var headers = new Dictionary<string, string>();
         var payload = ReadOnlyMemory<byte>.Empty;
@@ -241,7 +241,7 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task Offsets_ArePerPartitionIndependent()
     {
-        var store = new InMemoryTopicStore(4, 10000);
+        var store = new InMemoryTopicStore(4);
         int? p1 = null;
         int? p2 = null;
         byte[] key1 = null!;
@@ -285,7 +285,7 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task RoundRobin_NoKey_SpreadsAcrossPartitions()
     {
-        var store = new InMemoryTopicStore(3, 10000);
+        var store = new InMemoryTopicStore(3);
         var headers = new Dictionary<string, string>();
         var payload = ReadOnlyMemory<byte>.Empty;
 
@@ -304,7 +304,7 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task ReadPartition_ReturnsRecordsInAppendOrder()
     {
-        var store = new InMemoryTopicStore(1, 10000);
+        var store = new InMemoryTopicStore(1);
         var headers = new Dictionary<string, string>();
         var payload1 = new byte[] { 10 }.AsMemory();
         var payload2 = new byte[] { 20 }.AsMemory();
@@ -328,7 +328,7 @@ public class InMemoryTopicStoreTests
     [Trait("Category", "Unit")]
     public async Task Reader_StartingAtZero_SeesRetainedEarlierRecords()
     {
-        var store = new InMemoryTopicStore(1, 10000);
+        var store = new InMemoryTopicStore(1);
         var headers = new Dictionary<string, string>();
         var payload1 = new byte[] { 100 }.AsMemory();
 

@@ -107,11 +107,11 @@ public sealed class InMemoryTopicStore : ITopicStore
     private readonly ConcurrentDictionary<string, Topic> _topics = new();
     private readonly int _defaultPartitionCount;
 
-    public InMemoryTopicStore() : this(4, 10000)
+    public InMemoryTopicStore() : this(4)
     {
     }
 
-    public InMemoryTopicStore(int defaultPartitionCount, int channelCapacity)
+    public InMemoryTopicStore(int defaultPartitionCount)
     {
         _defaultPartitionCount = defaultPartitionCount;
     }
