@@ -288,6 +288,28 @@ Two benefits:
    order-sensitive messages the same partition key (same order ID → same key → same partition → preserved
    order). Global order *across* partitions is not guaranteed (a trade-off).
 
+### How routing is decided — partition key present or not
+There is **no separate flag**. The decision is made from the `partition_key` field itself: the publisher
+either fills it or leaves it empty, and the broker branches on that.
+```
+PublishEnvelope.partition_key empty?
+ ├─ NO  (key given)  → hash(key) % N  → same key always lands in the same partition  → ORDER preserved
+ └─ YES (no key)     → round-robin     → spread evenly across partitions             → no ordering promise
+```
+- **The publisher decides per message, by the meaning of the data** — not the topic, and not a flag. The
+  question is "must this message stay ordered relative to others?":
+  - **Needs ordering / grouping → give a key.** Use the identifier of the thing whose events must stay in
+    order: `partition_key = orderId` (an order's create/pay/ship events land together, in order), or
+    `partition_key = userId` (one user's activity stays sequential).
+  - **Order doesn't matter → omit the key.** It is then spread round-robin for even load (independent sensor
+    readings, order-insensitive notifications).
+- So **within one topic** some messages may carry a key and others may not — it is a per-message choice.
+- **Ordering is guaranteed only within a partition, never across the topic.** The *only* way to get ordering
+  is to route related messages to the same partition by giving them the same key. No key = a declaration that
+  order is not needed.
+- Implementation detail: "no key" = an empty `partition_key` (we branch on `IsEmpty`); we don't add a separate
+  "has key" flag. (Kafka behaves the same: keyed record → hash-partitioned; null key → round-robin/sticky.)
+
 ### Consumer Group
 Group several subscribers consuming the same topic.
 The broker assigns partitions across the group without overlap.

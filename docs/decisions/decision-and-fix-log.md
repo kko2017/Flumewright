@@ -519,3 +519,84 @@
 - **Docs impact:** 01 plan §3/§4/§5/§6/§10/§14 updated; M2 redefined (v0.7). 02 study-notes to add push-vs-pull
   + log-as-cursor + at-least-once↔offset-commit. 10 M2 instruction to be rewritten for the log model. Résumé
   wording shifts from "Kafka + Pub/Sub blend" toward "log-based streaming bus (Kafka-style)".
+
+## DEC-016 — Tool Permission: strict → always-proceed (control re-placed, not relaxed)
+- **Milestone/Step:** M2 (before Step 3 implementation). Tooling/workflow decision.
+- **Type:** process/tooling decision
+- **Decision:** Switch the Antigravity CLI `Tool Permission` from `strict` (approve every tool call) to
+  `always-proceed` (the CLI runs tools without a per-call prompt). The menu offered only these two levels —
+  there is no "auto-approve reads only" middle option — so per-call approval of even read-only actions
+  (ListDir, Read, grep) was pure friction with little control value.
+- **Why this is NOT a loss of control:** per-call approval is only one of several control layers, and the
+  highest-friction one. The real safety net stays intact:
+  - **git remote is CLI-forbidden** (GEMINI.md: local git only; never push/pull/fetch/remote/gh). The user
+    does all remote ops; push also needs the user's credentials. So the CLI cannot ship anything outward.
+  - **main branch protection** (DEC-012): PR + green CI required; the CLI cannot touch main directly.
+  - **per-step commits + `git show --stat` after each**: every change is visible and individually revertible.
+  - **checkpoint verification** (DEC-013): the CLI stops at risk-placed checkpoints and self-reports; the
+    human reviews the high-risk steps. **This is the true control point.**
+  - **dev container isolation** + **pre-commit gate** (build + fast tests must pass to commit).
+  - So control moves from "approve every tool call" to "review at checkpoints" — a **re-placement, not a
+    relaxation**.
+- **Distinct from `--dangerously-skip-permissions`:** that CLI flag bypasses all permission checks and is
+  still forbidden (GEMINI.md). `always-proceed` is a setting-level permission level; other settings and the
+  GEMINI.md rules still apply. The git-boundary and checkpoint rules are unchanged.
+- **Guardrail that must NOT be relaxed alongside this:** checkpoint verification (DEC-013). Tool prompts are
+  gone, but the CLI must still STOP at each checkpoint, self-report, and wait for human review before
+  proceeding. If that ever slips, this decision should be revisited.
+- **Sandbox note:** `proceed-in-sandbox` was not usable — it only auto-proceeds when Sandbox Mode is ON, and
+  enabling the CLI sandbox on top of the dev container risks breaking builds/tests (esp. the Kestrel real-port
+  integration test). So Sandbox stays OFF; `always-proceed` is the chosen path instead.
+- **Rationale:** the per-call friction outweighed its marginal control value given the other layers. This is a
+  deliberate friction/control trade-off, recorded so the reasoning is auditable.
+
+## FIX-009 — Checkpoint A caught a LATEST-semantics bug in the channel store (became the trigger for DEC-015)
+- **Milestone/Step:** M2 Step 3 (original channel-based version), found at CHECKPOINT A.
+- **Type:** `[correctness/bug]` — caught by checkpoint review, not by passing tests.
+- **What:** the first channel-based Step 3 store built one bounded channel per partition and drained them into
+  a single **unbounded** merged channel via background tasks. Because the merge channel was unbounded, the
+  intended bounded/LATEST drop semantics never applied — a slow subscriber would buffer without bound. All
+  unit tests passed; the defect surfaced only on human review at the checkpoint.
+- **Significance:** this is the **first correctness bug caught by the risk-based checkpoint model (DEC-013)** —
+  evidence the checkpoint is doing its job (a passing test suite was not sufficient). The follow-up debate over
+  the buffer-full policy (DropWrite vs DropOldest, the meaning of "LATEST") then exposed that the project was
+  mixing push and log delivery models, which led directly to **DEC-015** (confirm the log/pull model).
+- **Resolution:** superseded by the log model — the channel store (and the whole drop-policy question) was
+  replaced by the per-partition append-only log in the new Step 3 (commits 35870fe, 0da4516). In the log model
+  a slow subscriber simply lags by offset; there is no buffer to overflow, so the bug class no longer exists.
+- **Lesson:** "a passing test/success report is a starting point, not a conclusion" (08 principle) held up —
+  code review at the checkpoint caught what green tests missed.
+
+## DEC-017 — Planned CI/CD quality-gate hardening (reserved; execute after M2)
+- **Milestone/Step:** reserved during M2; **to be executed in the infrastructure interval after M2 merges,
+  before M3** (the same "separate infra work from a code milestone" pattern used between M1 and M2). Coyote is
+  deferred further, to **after M3**.
+- **Type:** process/tooling decision (reservation — not yet implemented)
+- **Motivation:** "build + unit tests pass" is a weak quality gate. The repo is **public**, and the project
+  doubles as a portfolio piece, so visible, industry-standard quality signals matter. Goal = overall quality,
+  not just one metric.
+- **Planned additions (after M2):**
+  - **Coverage — Coverlet** (`coverlet.collector`, `dotnet test --collect:"XPlat Code Coverage"`, Cobertura
+    output). Gate strategy: **start the threshold BELOW the current measured number and raise it gradually** —
+    coverage is a tool to surface untested code, not a score to chase. **Exclude** generated proto code,
+    `Program.cs` (host bootstrap), and the Observability/Security skeletons from the denominator, or the % is
+    unfairly low. Note: `Directory.Build.props` already enables analyzers + warnings-as-errors, so some smell
+    detection is already in place.
+  - **SonarCloud — primary quality gate** (public repo = free). Overall dashboard: coverage, code smells,
+    duplication, vulnerabilities, maintainability + a README **badge** (strong portfolio signal). This is the
+    main gate.
+  - **CodeQL — security SAST layer** (public repo = free, native GitHub Actions, results in the Security tab).
+    Complements SonarCloud (deep security vs overall quality); the two don't overlap.
+  - **Dependabot:** turn on (free dependency-vulnerability PRs), but **do NOT feature it as a selling point** —
+    it's a background bot, not a CI-pipeline step, so its portfolio value is low. Security hygiene only.
+- **Concurrency analysis — explicitly scoped:** concurrency bugs (e.g. the TCS wakeup class) are NOT caught by
+  static analysis or by API-functional tools. They are addressed by **checkpoint code review + concurrency
+  unit tests (e.g. 1000 concurrent appends) + load/stress tests (load.yml, indirect exposure)**, all already
+  planned/in place. **Microsoft Coyote** (systematic concurrency-testing framework that can deterministically
+  find races/deadlocks) is the real tool for direct detection and has **high portfolio value**, but carries a
+  learning curve → **adopt after M3** (M3 adds consumer-group/offset-commit concurrency, so Coyote lands
+  naturally there). **Newman/Postman is rejected** — it is REST/HTTP-oriented (we are gRPC + protobuf) and is
+  an API-functional runner, not a concurrency analyzer; it does not fit either of our needs.
+- **Deliverable:** a dedicated CI/CD doc (`docs/guides/ci-cd-and-quality-gates.md`) capturing the pipeline,
+  the gates, the coverage strategy, and the concurrency-testing approach. Work happens on a separate branch
+  (`chore/ci-quality-gates`), kept apart from code milestones.
