@@ -78,10 +78,14 @@ What a message bus provides:
 | Load balancing | Consumer group | Subscription |
 | Best learning point | log/partition/group/replay architecture | topic/subscription split, ack/nack semantics |
 
-**Flumewright's choice:**
-Build a lightweight self-hosted broker ("Kafka-lite") that takes Kafka's **architectural concepts**
-(partitioned log, offset, consumer group) as the primary reference, while borrowing Pub/Sub's
-**delivery semantics** (ack/nack, at-least-once) for the interface. No dependency on external Kafka/PubSub.
+**Flumewright's choice (log model confirmed):**
+Both Kafka and Google Pub/Sub implement the **Pub/Sub pattern**; the table above shows they differ in *how
+messages are stored and delivered*. Flumewright is built on the **log model** (Kafka-style): publish appends
+to a per-partition append-only log; subscribers pull by holding their own offset (cursor); fan-out is many
+subscribers reading the same log at their own offsets. This is a deliberate, confirmed choice — not a blend
+of both delivery models (the two don't cleanly combine; log+pull vs push+buffer are different mechanics).
+at-least-once is then realized via **offset commit** (the Kafka form of ack), not push-style ack of
+individual messages. No dependency on external Kafka/PubSub. (See plan §3 and decision-and-fix-log DEC-015.)
 
 ---
 
@@ -119,18 +123,24 @@ Make processing the same message twice yield the same result.
 - Bad: "balance += 100" (twice → +200)
 - Good: "if transaction ID X, set balance to 500" / record processed message IDs and skip duplicates
 
-### Flumewright Behavior
+### Flumewright Behavior (log model)
+In a log model, "ack" is an **offset commit**: the subscriber tells the broker "I've processed up to offset N."
+That commit IS the acknowledgment — it's how at-least-once is realized here, rather than acking each message
+individually as in a push model.
 ```
-broker delivers (assigns delivery_id) → subscriber processes → ack/nack
-   ↑                                                              │
-   └──── if no ack, redeliver after timeout ◀─────────────────────┘
+subscriber reads from its committed offset → processes → commits offset N
+   ↑                                                          │
+   └── on crash/restart, resume from last committed offset ◀──┘  (messages after N are re-read → at-least-once)
 ```
-- The broker tracks sent messages as **in-flight**.
-- ack → remove from in-flight.
-- nack → add to redelivery set immediately.
-- ack timeout → assume dead, redeliver.
-- **Dead Letter Queue (DLQ)**: messages exceeding max redelivery count are isolated to prevent
-  infinite retries.
+- The subscriber's **committed offset** is the durable "up to here is done" marker.
+- If it crashes before committing, it resumes from the last commit and **re-reads** (possible duplicates →
+  idempotency, above).
+- nack / redelivery / **DLQ** (isolating messages that exceed a max-retry count): these are M3 concerns built
+  on top of offset tracking. (Earlier drafts described per-message ack with `delivery_id` and an in-flight set —
+  that was the push-model framing; the log model centers on the committed offset instead. See DEC-015.)
+- Because the log is retained (Phase 1: process lifetime), a slow subscriber is never "dropped" — it simply
+  has a lower committed offset and catches up at its own pace. (Contrast: a push model with a bounded buffer
+  must drop or block when the buffer fills; the log model has no such dilemma.)
 
 **Parameters to set:** ack timeout (wait duration), max redelivery count.
 
@@ -249,23 +259,34 @@ Metrics reveals "p99 latency spiked"
 
 A mechanism solving scalability (load balancing) and ordering at once. Kafka's core idea.
 
+### Push vs Pull — the model Flumewright uses
+There are two ways a broker gets messages to subscribers:
+- **Push model** (e.g. classic brokers): the broker *pushes* each message into a per-subscriber buffer/queue.
+  No retention — once delivered it's gone. A slow subscriber fills its buffer → the broker must **drop or
+  block**. Late subscribers get nothing from before they connected.
+- **Pull model** (Kafka, **Flumewright**): the broker *appends* messages to a per-partition **log** and keeps
+  them. Each subscriber *pulls* by holding its own **offset** (a cursor = "next index I will read"). A slow
+  subscriber just has a lower offset and catches up later — nothing is dropped. Fan-out = many subscribers
+  reading the **same log** at their **own offsets**.
+
+Flumewright uses the **pull/log model**. So "offset" is not a mere sequence label — it is the subscriber's
+read position in the log, and the basis of replay and of at-least-once (via offset commit). (See DEC-015.)
+
 ### Partitioning
-Split one topic into several **partitions**.
-A message goes to a specific partition by the hash of its partition key.
+Split one topic into several **partitions**. Each partition is an **append-only log**.
+A message goes to a specific partition by the hash of its partition key (round-robin if no key).
 ```
-Topic "orders" (3 partitions)
- ├─ Partition 0 : [m1] [m4] [m7] ...
- ├─ Partition 1 : [m2] [m5] [m8] ...
- └─ Partition 2 : [m3] [m6] [m9] ...
+Topic "orders" (3 partitions)   — each partition is an ordered log; subscribers hold an offset per partition
+ ├─ Partition 0 (log) : [off0:m1] [off1:m4] [off2:m7] ...
+ ├─ Partition 1 (log) : [off0:m2] [off1:m5] [off2:m8] ...
+ └─ Partition 2 (log) : [off0:m3] [off1:m6] [off2:m9] ...
 ```
 Two benefits:
-1. **Parallelism/scalability** — one partition is consumed by one consumer at a time. With 3
-   partitions, 3 consumers process concurrently. Partition count = unit of parallelism = the key
-   means of handling a 100K burst.
-2. **Per-partition ordering** — within a partition, messages are delivered in arrival order.
-   Give order-sensitive messages the same partition key
-   (e.g., events for the same order ID → same key → same partition → preserved order).
-   Note: global order *across* partitions is not guaranteed (a trade-off).
+1. **Parallelism/scalability** — partitions are read independently/in parallel. Partition count = unit of
+   parallelism = the key means of handling a 100K burst.
+2. **Per-partition ordering** — within a partition log, records are in append order (by offset). Give
+   order-sensitive messages the same partition key (same order ID → same key → same partition → preserved
+   order). Global order *across* partitions is not guaranteed (a trade-off).
 
 ### Consumer Group
 Group several subscribers consuming the same topic.
@@ -293,12 +314,13 @@ Topic "orders" ──┤
   coexist on one topic.
 
 ### Flumewright Stages
-- **M2 (partitioning):** topic→N partitions, key→partition routing (hash; round-robin if no key),
-  per-partition offset + bounded channel, parallel per-partition consume loops. A subscriber receives ALL
-  of a topic's partitions at this stage. Partition count is fixed per topic.
+- **M2 (partitioning):** topic→N partitions, key→partition routing (hash; round-robin if no key), each
+  partition is a **per-partition append-only log with its own offset**; subscribers **pull by offset (cursor)**,
+  partition logs read in parallel. A subscriber receives ALL of a topic's partitions at this stage. Partition
+  count is fixed per topic. (No per-subscriber buffer/drop — that was the old push framing; see DEC-015.)
 - **M3 (consumer group):** in-group partition assignment + distribution (static first) — group members
-  split the topic's partitions. This is built ON TOP OF M2 and is a separate milestone, not part of M2.
-- **Phase 2:** rebalancing maturity — dynamic reassignment on member join/leave, safe handover.
+  split the topic's partitions; at-least-once via **offset commit**. Built ON TOP OF M2, a separate milestone.
+- **Phase 2:** rebalancing maturity (dynamic reassignment), retention/eviction + disk persistence, replay.
 
 ---
 
@@ -336,7 +358,7 @@ Pattern choice matters for high throughput.
 | Pattern | Form | Use in the message bus |
 |---------|------|------------------------|
 | Unary | 1 request → 1 response | Low-frequency control (topic creation, etc., admin) |
-| Server streaming | 1 request → N responses | **Subscribe** (broker pushes continuously to consumer) |
+| Server streaming | 1 request → N responses | **Subscribe** (broker streams log records to the consumer from its offset) |
 | Client streaming | N requests → 1 response | Batch upload |
 | Bidi streaming | N requests ↔ N responses | **Publish** (batch + flow control), concurrent ack handling |
 
@@ -350,17 +372,19 @@ Calling unary once per message for 100K collapses under connection/handshake ove
 
 | Technique | Description |
 |-----------|-------------|
-| **Bounded Channels** (`System.Threading.Channels`) | Per-partition producer/consumer split queue, minimal lock contention |
-| **Backpressure** | On queue limit, signal flow control back to the publish side → prevents unbounded buildup |
+| **Per-partition append-only log** | Append is O(1) and lock-light; reads are sequential by offset. Partitions are independent → parallel append/read |
+| **Backpressure (M5)** | Flow control on the *publish* stream when a consumer's reads lag the log — a "slow down" signal to the producer, NOT a per-message drop. Real backpressure is an M5 concern |
 | **Batching** | Batch publish/deliver → reduces syscall/allocation overhead |
 | **Partition parallelism** | Partition count = unit of parallelism, scales with cores |
-| **Thread pool tuning** | Dedicated long-running consume loops + ThreadPool. Avoid excessive async context switching |
+| **Thread pool tuning** | Dedicated long-running read loops + ThreadPool. Avoid excessive async context switching |
 | **Object pooling / `ArrayPool`** | Buffer reuse to reduce GC pressure |
 | **Zero/low-copy** | Opaque payload → no deserialization, minimal copying |
 
-> **Backpressure** note: if production outpaces consumption, the queue grows unbounded → memory blowup
-> → OOM. Backpressure flows a "slow down!" signal back to the producer to keep the system stable
-> (like tightening a valve when a pipe over-fills).
+> **Backpressure** note: in a log model a slow consumer does not cause buildup the way a push buffer would —
+> it simply lags (lower offset) and the retained log lets it catch up. Backpressure matters mainly on the
+> *publish* side: if producers append faster than the system can sustain, M5 flows a "slow down!" signal back
+> to the producer (like tightening a valve when a pipe over-fills). This is distinct from the push model,
+> where a full per-subscriber buffer forces an immediate drop-or-block decision.
 
 ---
 

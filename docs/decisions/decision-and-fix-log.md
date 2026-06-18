@@ -479,3 +479,44 @@
   checkpoint-review / zoomout-review actually fire). Committed under `chore/add-skills` (skills + GEMINI.md)
   and recorded here. Skills/rules evolve as the workflow does; keep them as pointers so doc changes don't
   strand a stale copy.
+
+## DEC-015 — Delivery model confirmed: log/pull (Kafka-style), not push; M2 redefined
+- **Milestone/Step:** M2, mid-flight (during CHECKPOINT A review). Applies M2 onward; touches M1's store mechanism.
+- **Type:** architecture decision (foundational)
+- **Context — how this surfaced:** during the CHECKPOINT A review of the partitioned store, a question about
+  buffer-full policy (DropWrite vs DropOldest, and what "LATEST" means) exposed a deeper issue: the project
+  had been mixing two delivery models. The plan named Kafka as the primary model (partitioned **log**, offset,
+  replay), but M1/M2 were implemented **push-style** (publish writes into per-subscriber channels; no
+  retention; late subscribers get nothing). The "buffer full → drop" debate is itself a symptom of the push
+  model — a log model doesn't have that problem.
+- **Clarification reached:** Pub/Sub is a *pattern* (decoupled publishers/subscribers, topic-based fan-out).
+  Both Kafka and Google Pub/Sub implement that pattern; they differ in *how messages are retained and
+  delivered* (Kafka = append-only log + consumer pull by offset; Google Pub/Sub-style = push + per-subscriber
+  buffer). These are different mechanics and don't cleanly combine in one store. "Kafka also fans out" is
+  correct — it fans out by letting many consumers read the same log at their own offsets.
+- **Decision:** build the broker on the **log/pull model** (Kafka-style):
+  - Publish **appends** to a per-partition **append-only log** (in-memory, Phase 1).
+  - Subscribers **pull** by holding their own **offset (cursor)**; they read records in order from the log.
+  - Fan-out = many subscribers reading the same partition log at their own offsets.
+  - No per-subscriber bounded channel, no drop policy, no buffer backpressure — those were push-model artifacts
+    and are removed. (The earlier FullMode Wait/DropWrite/DropOldest question is therefore moot.)
+  - offset and partition now carry real meaning (log position, replay). at-least-once follows from **offset
+    commit** in M3 (the Kafka form of ack) — so the at-least-once / ack work studied in M1 is NOT discarded;
+    it re-emerges as offset commit. Exactly-once stays out of scope; consumer-side idempotency stays the user's
+    responsibility.
+- **Retention scope:** Phase 1 keeps the in-memory log for the **process lifetime** (no eviction policy yet).
+  Retention/eviction (time/size) and disk persistence (WAL + segments) are **Phase 2**. Replay (offset-based
+  re-read) is naturally enabled by the log but the start-position API is deferred (proto already reserves
+  `StartPosition`).
+- **Handling the in-flight M2 work (option B):** stay on `feat/m2-partitioning`. **Keep Step 1 (proto fields)
+  and Step 2 (PartitionRouter)** — both are valid in the log model (routing decides which log to append to).
+  **Replace Step 3** (the channel-based store) with a log-based store in a new commit
+  (`refactor(broker-core): replace channel-based store with append-only log model`). The transition is kept in
+  history on purpose — together with this DEC it documents a controlled course-correction, not a cover-up.
+- **Rationale:** the project's motive is a usable Pub/Sub bus; the log model makes offsets/partitions
+  meaningful, removes the incoherent push/pull blend, and is the more instructive build. The cost is
+  re-doing the store's storage/delivery mechanism (M1's channel fan-out included), but partition/offset/proto/
+  router/gRPC-contract/tests-skeleton/harness all carry over.
+- **Docs impact:** 01 plan §3/§4/§5/§6/§10/§14 updated; M2 redefined (v0.7). 02 study-notes to add push-vs-pull
+  + log-as-cursor + at-least-once↔offset-commit. 10 M2 instruction to be rewritten for the log model. Résumé
+  wording shifts from "Kafka + Pub/Sub blend" toward "log-based streaming bus (Kafka-style)".
