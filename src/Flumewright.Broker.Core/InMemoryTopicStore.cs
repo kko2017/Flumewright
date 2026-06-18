@@ -14,29 +14,86 @@ public sealed class InMemoryTopicStore : ITopicStore
     private class Partition
     {
         public int Index { get; }
-        private long _offsetCounter = -1;
-        private long _droppedCount = 0;
+        private readonly List<StoredMessage> _messages = new();
+        private readonly object _lock = new();
+        private TaskCompletionSource _tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public Partition(int index)
         {
             Index = index;
         }
 
-        public long GetNextOffset() => Interlocked.Increment(ref _offsetCounter);
-        public void IncrementDroppedCount() => Interlocked.Increment(ref _droppedCount);
-        public long DroppedCount => Volatile.Read(ref _droppedCount);
+        public (int Partition, long Offset) Append(
+            IReadOnlyDictionary<string, string> headers,
+            ReadOnlyMemory<byte> payload)
+        {
+            TaskCompletionSource oldTcs;
+            long offset;
+            lock (_lock)
+            {
+                offset = _messages.Count;
+                var message = new StoredMessage(Index, offset, headers, payload);
+                _messages.Add(message);
+                oldTcs = _tcs;
+                _tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+            oldTcs.TrySetResult();
+            return (Index, offset);
+        }
+
+        public async IAsyncEnumerable<StoredMessage> ReadFromOffsetAsync(
+            long startOffset,
+            [EnumeratorCancellation] CancellationToken ct = default)
+        {
+            long currentOffset = startOffset;
+            while (!ct.IsCancellationRequested)
+            {
+                StoredMessage? msg = null;
+                Task? waitTask = null;
+
+                lock (_lock)
+                {
+                    if (currentOffset < _messages.Count)
+                    {
+                        msg = _messages[(int)currentOffset];
+                    }
+                    else
+                    {
+                        waitTask = _tcs.Task;
+                    }
+                }
+
+                if (msg != null)
+                {
+                    yield return msg;
+                    currentOffset++;
+                }
+                else if (waitTask != null)
+                {
+                    await waitTask.WaitAsync(ct);
+                }
+            }
+        }
+
+        public int MessageCount
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return _messages.Count;
+                }
+            }
+        }
     }
 
     private class Topic
     {
         public Partition[] Partitions { get; }
         private long _rrCounter = -1;
-        public int ChannelCapacity { get; }
-        public ConcurrentDictionary<Guid, Channel<StoredMessage>> Subscribers { get; } = new();
 
-        public Topic(int partitionCount, int channelCapacity)
+        public Topic(int partitionCount)
         {
-            ChannelCapacity = channelCapacity;
             Partitions = new Partition[partitionCount];
             for (int i = 0; i < partitionCount; i++)
             {
@@ -49,7 +106,6 @@ public sealed class InMemoryTopicStore : ITopicStore
 
     private readonly ConcurrentDictionary<string, Topic> _topics = new();
     private readonly int _defaultPartitionCount;
-    private readonly int _channelCapacity;
 
     public InMemoryTopicStore() : this(4, 10000)
     {
@@ -58,13 +114,11 @@ public sealed class InMemoryTopicStore : ITopicStore
     public InMemoryTopicStore(int defaultPartitionCount, int channelCapacity)
     {
         _defaultPartitionCount = defaultPartitionCount;
-        _channelCapacity = channelCapacity;
     }
 
     public InMemoryTopicStore(IConfiguration configuration)
     {
         _defaultPartitionCount = configuration.GetValue<int>("Broker:PartitionsPerTopic", 4);
-        _channelCapacity = configuration.GetValue<int>("Broker:ChannelCapacityPerPartition", 10000);
     }
 
     public ValueTask<(int Partition, long Offset)> PublishAsync(
@@ -74,8 +128,8 @@ public sealed class InMemoryTopicStore : ITopicStore
         ReadOnlyMemory<byte> payload,
         CancellationToken ct = default)
     {
-        var topicState = _topics.GetOrAdd(topic, _ => new Topic(_defaultPartitionCount, _channelCapacity));
-        
+        var topicState = _topics.GetOrAdd(topic, _ => new Topic(_defaultPartitionCount));
+
         int partitionIndex;
         if (partitionKey.IsEmpty)
         {
@@ -88,60 +142,87 @@ public sealed class InMemoryTopicStore : ITopicStore
         }
 
         var partition = topicState.Partitions[partitionIndex];
-        long offset = partition.GetNextOffset();
-        var message = new StoredMessage(partitionIndex, offset, headers, payload);
+        var result = partition.Append(headers, payload);
 
-        foreach (var sub in topicState.Subscribers.Values)
-        {
-            bool success = sub.Writer.TryWrite(message);
-            if (!success)
-            {
-                partition.IncrementDroppedCount();
-                // M5: real backpressure
-            }
-        }
+        return new ValueTask<(int Partition, long Offset)>(result);
+    }
 
-        return new ValueTask<(int Partition, long Offset)>((partitionIndex, offset));
+    public IAsyncEnumerable<StoredMessage> SubscribeAsync(
+        string topic,
+        CancellationToken ct = default)
+    {
+        return SubscribeAsync(topic, -1, ct);
     }
 
     public async IAsyncEnumerable<StoredMessage> SubscribeAsync(
         string topic,
+        long startOffset,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        var topicState = _topics.GetOrAdd(topic, _ => new Topic(_defaultPartitionCount, _channelCapacity));
-        var subId = Guid.NewGuid();
+        var topicState = _topics.GetOrAdd(topic, _ => new Topic(_defaultPartitionCount));
 
-        var channel = Channel.CreateBounded<StoredMessage>(new BoundedChannelOptions(topicState.ChannelCapacity)
+        var channel = Channel.CreateUnbounded<StoredMessage>(new UnboundedChannelOptions
         {
             SingleWriter = false,
-            SingleReader = true,
-            FullMode = BoundedChannelFullMode.Wait
+            SingleReader = true
         });
 
-        topicState.Subscribers.TryAdd(subId, channel);
+        var partitionTasks = new List<Task>();
 
-        try
+        for (int i = 0; i < topicState.Partitions.Length; i++)
         {
-            await foreach (var msg in channel.Reader.ReadAllAsync(ct))
+            int partitionIndex = i;
+            var partition = topicState.Partitions[partitionIndex];
+
+            long initialOffset = startOffset;
+            if (initialOffset < 0)
+            {
+                initialOffset = partition.MessageCount;
+            }
+
+            var task = Task.Run(async () =>
+            {
+                try
+                {
+                    await foreach (var msg in partition.ReadFromOffsetAsync(initialOffset, ct))
+                    {
+                        await channel.Writer.WriteAsync(msg, ct);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                catch (Exception)
+                {
+                }
+            }, CancellationToken.None);
+
+            partitionTasks.Add(task);
+        }
+
+        _ = Task.WhenAll(partitionTasks).ContinueWith(_ => channel.Writer.TryComplete(), TaskScheduler.Default);
+
+        while (await channel.Reader.WaitToReadAsync(ct))
+        {
+            while (channel.Reader.TryRead(out var msg))
             {
                 yield return msg;
             }
         }
-        finally
-        {
-            if (topicState.Subscribers.TryRemove(subId, out var subChannel))
-            {
-                subChannel.Writer.Complete();
-            }
-        }
     }
 
-    internal long GetDroppedCount(string topic, int partitionIndex)
+    public IAsyncEnumerable<StoredMessage> ReadPartitionAsync(
+        string topic,
+        int partition,
+        long startOffset,
+        CancellationToken ct = default)
     {
-        if (_topics.TryGetValue(topic, out var topicState) && partitionIndex >= 0 && partitionIndex < topicState.Partitions.Length)
+        var topicState = _topics.GetOrAdd(topic, _ => new Topic(_defaultPartitionCount));
+        if (partition < 0 || partition >= topicState.Partitions.Length)
         {
-            return topicState.Partitions[partitionIndex].DroppedCount;
+            throw new ArgumentOutOfRangeException(nameof(partition), $"Partition must be between 0 and {topicState.Partitions.Length - 1}");
         }
-        return 0;
+
+        return topicState.Partitions[partition].ReadFromOffsetAsync(startOffset, ct);
     }
 }

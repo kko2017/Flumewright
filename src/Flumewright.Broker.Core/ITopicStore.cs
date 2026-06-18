@@ -17,4 +17,15 @@ public interface ITopicStore
     IAsyncEnumerable<StoredMessage> SubscribeAsync(
         string topic,
         CancellationToken ct = default);
+
+    IAsyncEnumerable<StoredMessage> SubscribeAsync(
+        string topic,
+        long startOffset,
+        CancellationToken ct = default);
+
+    IAsyncEnumerable<StoredMessage> ReadPartitionAsync(
+        string topic,
+        int partition,
+        long startOffset,
+        CancellationToken ct = default);
 }
