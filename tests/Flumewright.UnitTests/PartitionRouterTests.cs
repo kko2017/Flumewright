@@ -93,4 +93,26 @@ public class PartitionRouterTests
         actZero.Should().Throw<ArgumentOutOfRangeException>();
         actNegative.Should().Throw<ArgumentOutOfRangeException>();
     }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public void ForKey_UniformDistribution_WithinGenerousVariance()
+    {
+        int partitionCount = 4;
+        int keyCount = 1000;
+        var counts = new int[partitionCount];
+
+        for (int i = 0; i < keyCount; i++)
+        {
+            var key = System.Text.Encoding.UTF8.GetBytes($"key-prefix-{i}");
+            int partition = PartitionRouter.ForKey(key, partitionCount);
+            counts[partition]++;
+        }
+
+        // Generous variance band: between 150 and 350 for each of 4 partitions (expected ~250)
+        for (int i = 0; i < partitionCount; i++)
+        {
+            counts[i].Should().BeInRange(150, 350, $"partition {i} should receive a reasonably uniform distribution of keys");
+        }
+    }
 }
