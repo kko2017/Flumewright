@@ -31,4 +31,4 @@ Several capabilities are explicitly out of scope for M2 and are deferred to late
 ## Key Decisions
 
 - **DEC-015 (Log Model Transition):** Adopted a pull-based Kafka-style log store. This choice replaced the previous channel-based push model to prevent subscriber buffer overflows and support message retention.
-- **FIX-009 (LATEST Semantics Bug):** Discovered during Checkpoint A that the channel-based store suffered from a bug where slower subscribers could receive messages out of order under LATEST semantics. This bug catalyzed the transition to the append-only log model.
+- **FIX-009 (LATEST Semantics Bug):** Discovered during Checkpoint A that the channel-based store built one bounded channel per partition and drained them into a single unbounded merged channel, preventing the bounded/LATEST drop semantics from applying and allowing slow subscribers to buffer without bound. This bug catalyzed the transition to the append-only log model (DEC-015).
