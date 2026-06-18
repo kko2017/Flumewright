@@ -657,4 +657,5 @@ Each concept is not an isolated feature but complements the trade-offs of the ot
 
 ## Related Documents
 
-- Execution Plan: `01-execution-plan.en.md`
+- Execution Plan: `docs/design/plan.md`
+- Decision & Fix Log: `docs/decisions/decision-and-fix-log.md`

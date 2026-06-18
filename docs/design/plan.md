@@ -8,18 +8,18 @@
 
 ## 0. Document Map (Single Source of Truth)
 
-The documents below collectively define the project's source of truth. Only the English versions
-are committed (kept under `docs/`); Korean versions are for personal reference. When this plan
-references another document, it points to the filenames below.
+The documents below define the project's source of truth, kept under `docs/`. When this plan references
+another document, it points to its `docs/` path.
 
-| Document | English file (repo) | Role |
-|----------|---------------------|------|
-| Execution Plan (this document) | `01-execution-plan.en.md` → `docs/design/plan.md` | Top-level reference for scope, architecture, roadmap |
-| Study Notes | `02-study-notes.en.md` → `docs/learning/study-notes.md` | Learning material on PubSub / message bus concepts |
-| Version Control & Validation Guide | `03-version-control-guide.en.md` → `docs/guides/version-control-and-validation-guide.md` | Branch, commit, and test-gate rules |
-| Phase 0 Scaffolding Instructions | `04-phase0-scaffolding.en.md` | Step-by-step CLI commands for initial setup |
-| CLI Master Instruction & CI/CD | `05-phase0-cli-master-instruction.en.md` | CLI command prompts + Release/dev-artifact workflows |
-| README | `06-README.en.md` → `README.md` | Repository entry document |
+| Document | Path in repo | Role |
+|----------|--------------|------|
+| Execution Plan (this document) | `docs/design/plan.md` | Top-level reference for scope, architecture, roadmap |
+| Study Notes | `docs/learning/study-notes.md` | Learning material on PubSub / message bus concepts |
+| Version Control & Validation Guide | `docs/guides/version-control-and-validation-guide.md` | Branch, commit, and test-gate rules |
+| AI Collaboration | `docs/ai-collaboration.md` | How this project is built with an AI agent under a human-in-the-loop workflow |
+| Architecture Decision Records | `docs/decisions/NNNN-*.md` | Point-in-time design decisions (e.g. opaque payload, at-least-once) |
+| Decision & Fix Log | `docs/decisions/decision-and-fix-log.md` | Running log of decisions and fixes |
+| README | `README.md` | Repository entry document |
 
 > All document references in this (English) version point to `*.en.md`.
 
@@ -93,7 +93,7 @@ The broker **never deserializes** user message content.
 - User payloads are wrapped as opaque `bytes` + metadata (headers).
 - The broker routes using only the routing key (topic, partition key) and headers.
 - Therefore the broker is unaffected by whichever `.proto` a Publisher/Subscriber uses.
-- (Concept explained in `02-study-notes.en.md` Section 9. Rationale recorded in ADR 0001.)
+- (Concept explained in `docs/learning/study-notes.md` Section 9. Rationale recorded in ADR 0001.)
 
 ### 3.4 Transport Patterns (gRPC)
 | Operation | Pattern | Notes |
@@ -267,7 +267,7 @@ Flumewright.sln
 ## 10. Testing & Validation Strategy
 
 Tests are classified via `[Trait("Category", ...)]` into Unit / Integration / Load,
-running different sets at each gate (Section 12.3). For per-gate rules, see `03-version-control-guide.en.md` Sections 5–6.
+running different sets at each gate (Section 12.3). For per-gate rules, see `docs/guides/version-control-and-validation-guide.md` Sections 5–6.
 
 ### 10.1 Unit
 - Router/Partitioner: same key → same partition, distribution uniformity.
@@ -307,7 +307,7 @@ running different sets at each gate (Section 12.3). For per-gate rules, see `03-
 - Use a **repository `docs/` folder instead of a Wiki**. Versioned in the same commits/PRs as code,
   preventing code-doc drift and fitting the CLI workflow.
 - Record milestone design decisions in `docs/design/mN-*.md`; capture significant decisions as **ADRs**
-  (`docs/decisions/NNNN-*.md`). For the ADR template, see `05-phase0-cli-master-instruction.en.md` Section A.
+  (`docs/decisions/NNNN-*.md`). For the ADR format, follow the existing records `docs/decisions/0001-*.md` and `0002-*.md` as the template.
 - Bundle code and docs in the **same commit/PR**.
 - Update the README "Quick Start" whenever a feature becomes functional.
 - **Language policy:** all repository text is in **English** — README, docs, ADRs, commit messages,
@@ -328,7 +328,7 @@ docs/
 ## 12. Development Process (Version Control & Validation)
 
 > Core principle: **one commit = one validated small change.** Do not build everything at once.
-> See `03-version-control-guide.en.md` for full rules.
+> See `docs/guides/version-control-and-validation-guide.md` for full rules.
 
 ### 12.1 Branch Strategy
 - `main` is always green. Work on `feat/mN-...` branches per milestone, then merge.
@@ -361,7 +361,7 @@ docs/
 | `load.yml` | manual / nightly cron | Performance & stress tests |
 | `release.yml` | **push `v*.*.*` tag** | Release build + packaging + publish to Releases tab |
 
-- Full workflow YAML and the dev-artifact/Release supplements: see `05-phase0-cli-master-instruction.en.md` Section B and `04-phase0-scaffolding.en.md` Section 4.
+- The actual workflow YAML lives under `.github/workflows/` in the repo.
 - Action versions: `actions/checkout@v6`, `actions/setup-dotnet@v5`, `actions/cache@v4`,
   `actions/upload-artifact@v4`, `softprops/action-gh-release@v3`.
 - **Dev build**: each main CI uploads the broker artifact to Actions Artifacts (download the latest dev build).
@@ -373,7 +373,7 @@ docs/
 ## 14. Roadmap
 
 ### Phase 0 — Scaffolding (CLI-executed, stop before push)
-> Step-by-step commands: `04-phase0-scaffolding.en.md`. The CLI command prompt: `05-phase0-cli-master-instruction.en.md` Section D.
+> Phase 0 is complete; the resulting configuration lives in the repo root and `.github/`.
 - Solution/project structure, .gitignore/editorconfig/global.json/Directory.Build.props.
   - `.gitignore` blocks .NET build output **plus** certs/keys (`certs/`, `*.pfx`, `*.pem`, `*.key`, `*.crt`) and logs (`logs/`, `*.log`).
   - `global.json` pins .NET 8 SDK (`rollForward: latestFeature`); `Directory.Build.props` sets net8.0 / Nullable / `TreatWarningsAsErrors=true` / analyzers for all projects.

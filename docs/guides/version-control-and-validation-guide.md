@@ -319,27 +319,20 @@ last-step commit of the milestone done
 > Of the findings: `[correctness/bug]` fixes become FIX entries in the 09 decision-and-fix log;
 > `[out-of-scope]` items become DEC/notes. This review is one of 09's input sources.
 
-### Example CLI instruction
-> **Attach:** `@FW_Context.md @09-decision-and-fix-log.en.md @01-execution-plan.en.md @03-version-control-guide.en.md`
-> (Do NOT give the CLI the 08 verification log — it's the user's personal check record. **Always attach
-> 09** — its "intentionally deferred" list is the review guardrail, preventing the CLI from wrongly
-> flagging those as bugs.)
->
-> "M1 is done. Zoom out and review the whole codebase — **but only for correctness, consistency, and
-> resource leaks within M1's current scope.** Do not propose new features or M2+ work, and do not do
-> out-of-scope refactors. Items recorded in the 09 log as intentionally deferred (unbounded channels,
-> unary publish, etc.) are not defects. Classify findings as [correctness/bug] / [consistency/cleanup]
-> / [out-of-scope — record only] and **report only** — do not edit any code until I approve."
+### Running the review
+Use the **`zoomout-review` skill**, which encodes this procedure: it reads the decision-and-fix log (the
+"intentionally deferred" list is the guardrail that prevents wrongly flagging deferred items as bugs), keeps
+the scope fenced to the current milestone, classifies findings as [correctness/bug] / [consistency/cleanup] /
+[out-of-scope — record only], and **reports only** — no edits until the user approves. (The verification log
+is intentionally NOT used — it is the user's personal check record.)
 
 ### Milestone wrap-up sequence (the review is one step in this flow)
 A milestone is **triggered by the user** (not automatic — the user decides where the milestone ends)
 and closed in this order:
 1. Last feature step committed (e.g. M1 = Step 5 integration test passing).
 2. **docs/ sync + design note** (M1 = Step 6): re-copy (overwrite) the changed English documents into
-   their repo `docs/` paths to refresh them, update the milestone design note (`docs/design/mN-*.md`)
-   and the README "Quick Start", and `docs:` commit. (If personal-reference originals like 01/02/03
-   weren't synced along the way, fold them in here.) Also place/update the 09 log's English version at
-   `docs/decisions/decision-and-fix-log.md`.
+   their repo `docs/` paths to refresh them (use the `docs-sync` skill), update the milestone design note
+   (`docs/design/mN-*.md`) and the README "Quick Start", and `docs:` commit.
 3. **7.5 zoom-out review** (instruction above) → fix only 1–2 [correctness/bug] items after approval.
 4. Reflect outcomes into 08 (verification) and 09 (fix/decision).
 5. Confirm CI green → **user** merges to main → (if Phase end) tag.
@@ -482,6 +475,6 @@ unvalidated code to accumulate or enter main.
 
 ## 10. Related Documents
 
-- Execution Plan: `01-execution-plan.en.md`
-- Phase 0 Scaffolding Instructions: `04-phase0-scaffolding.en.md`
-- CLI Master Instruction & CI/CD: `05-phase0-cli-master-instruction.en.md`
+- Execution Plan: `docs/design/plan.md`
+- Decision & Fix Log: `docs/decisions/decision-and-fix-log.md`
+- AI Collaboration: `docs/ai-collaboration.md`

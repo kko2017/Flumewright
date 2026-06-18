@@ -5,8 +5,7 @@
 > "Future impact" is the point: it tells a later milestone (or a later you) what to revisit, saving
 > rediscovery cost. For large architectural decisions, use ADRs in `docs/decisions/` instead.
 >
-> Repo location (English version): `docs/decisions/decision-and-fix-log.md` (companion to the ADRs).
-> The Korean version (`09-decision-and-fix-log.ko.md`) is a personal-reference draft, not committed.
+> Repo location: `docs/decisions/decision-and-fix-log.md` (companion to the ADRs).
 
 ---
 
@@ -420,9 +419,9 @@
   main via a **merge commit** (not squash — preserves the per-unit commit history that 03 §1 depends on).
 - **NOT done (intentionally):** no `v0.1.0` tag — that is the **Phase 1** release marker (after M6), not a
   per-milestone action. M1 is one of six milestones in Phase 1.
-- **Next:** M2 — topic/partition + bounded channels + routing + multi-threaded consume loops (01 roadmap §14
+- **Next:** M2 — topic/partition + per-partition append-only log + offset-based consumption + routing (01 roadmap §14
   / §5 component "Router/Partitioner" + "Topic/Partition Store"). New branch `feat/m2-partitioning`, new
-  step-by-step instruction doc (`10-phase1-m2-*`).
+  step-by-step milestone instruction (personal, not committed).
 
 ## DEC-013 — Risk-based checkpoint verification (replaces per-step hand verification)
 - **Milestone/Step:** workflow decision, before M2 (applies M2 onward)
