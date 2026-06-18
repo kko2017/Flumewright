@@ -600,3 +600,34 @@
 - **Deliverable:** a dedicated CI/CD doc (`docs/guides/ci-cd-and-quality-gates.md`) capturing the pipeline,
   the gates, the coverage strategy, and the concurrency-testing approach. Work happens on a separate branch
   (`chore/ci-quality-gates`), kept apart from code milestones.
+
+## DEC-018 — M2 end-of-milestone zoom-out review: outcome & dispositions
+- **Milestone/Step:** M2 Step 6 part (b), before merge to main. Same protocol as DEC-011 (M1 zoom-out):
+  scope-fenced to M2, report-only, three-bucket classification, deferred items guarded by this log.
+- **Type:** review outcome / dispositions
+- **Scope:** partitioning + append-only log + offset-based consumption. Deferred items (consumer groups,
+  offset commit/ack/DLQ, retention/eviction, seek/replay API, streaming publish) were explicitly excluded
+  per the design note `docs/design/m2-partitioning.md` and were NOT treated as defects.
+- **[correctness/bug]: none.** Concurrency primitives (per-partition lock, Interlocked round-robin, the TCS
+  re-check-under-lock notify-all) and the gRPC cancellation path reviewed clean; the 25-test suite plus
+  Checkpoints A/B already exercised the guarantees.
+- **[consistency/cleanup]: 2 found, both fixed (approved):**
+  - **A — dead `channelCapacity` constructor parameter** (push-model remnant, unused after the log
+    migration). Removed: constructor `(int defaultPartitionCount)`, parameterless chain `this(4)`, and all
+    14 unit-test call sites updated (test logic unchanged). Commit `7df5563`
+    (`refactor(broker-core): drop dead channelCapacity constructor param`).
+  - **B — no hash-distribution uniformity test** (same-key determinism was tested; even spread was not).
+    Added `ForKey_UniformDistribution_WithinGenerousVariance` — 1000 distinct keys over 4 partitions, each
+    partition's share asserted within a **generous** band (150–350, expected ~250). Commit `670b020`
+    (`test(router): assert hash distribution stays reasonably uniform`).
+- **Lesson recorded (test design):** B surfaced a broader principle now written up in study-notes §11.65 —
+  **deterministic properties get tight assertions, probabilistic ones get generous ranges.** Asserting an
+  exact share (e.g. 245–255) on a statistical distribution would turn normal variance into a **flaky** test,
+  and a flaky test's fault lies in the test, not the code. Flaky tests erode CI trust (red stops meaning
+  "bug"), so they are worse than no test. The generous band is the *accurate* expression of what the hash
+  guarantees ("reasonably even"), not a loose one. (Same idea on the timing axis: FIX-008's bounded timeout.)
+- **[out-of-scope — record only]:** consumer groups/assignment (M3), offset commit/ack/DLQ (M3),
+  retention/eviction + disk persistence (Phase 2), seek/replay API over gRPC (Phase 2; retained-read is
+  validated at the store level for now), unary publish (M5). All already tracked; no new deferral introduced.
+- **Disposition:** fixes A and B approved and committed on `feat/m2-partitioning`. Next: docs sync (study-notes
+  §11.65 + this entry), then user merges M2 to main via a merge commit. **No tag** (v0.1.0 = Phase 1 / M6).

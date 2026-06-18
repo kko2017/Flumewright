@@ -573,6 +573,57 @@ separate process in M5 (load). (Incident/decisions: 09 FIX-005 · DEC-007 · DEC
 
 ---
 
+## 11.65 Test design: deterministic vs probabilistic assertions, and flaky tests
+
+A lesson learned while adding the partition hash-distribution test (M2 zoom-out). It changed how I think
+about what a test should assert.
+
+### What a flaky test is
+A **flaky test** is one that passes or fails **without the code changing** — green today, red tomorrow, green
+again, all on the same commit. The key point: **the flakiness is usually caused by the test, not by a bug in
+the code.** The code is fine; the test is asserting the wrong thing.
+
+### Why flaky tests are damaging — they destroy CI trust
+A test suite is only useful if a red result *means something*. When a test is flaky, red stops meaning "there
+is a bug" and starts meaning "that flaky one again — just re-run it." Once people learn to ignore or re-run
+red, they ignore the **real** failures too, and the CI gate is effectively dead: PRs get merged past a
+suite no one believes. **A flaky test is worse than no test** — it adds noise and erodes the signal that the
+whole point of CI depends on. So a flaky test is not a "strict, demanding test"; it is a **broken** test.
+
+### The real rule: assert exactly the property the code guarantees
+The mistake that creates flakiness is asserting **more than the code actually promises**. The fix is not
+"loosen everything until it stops going red" — it is to match the assertion to the *kind* of property:
+
+- **Deterministic property → assert it tightly (exactly).** The code guarantees an exact outcome every time,
+  so the test should too. Loosening here would be a genuinely weak test.
+  - Examples in Flumewright: "same partition key → same partition" (`ForKey(k)` is pure → assert equality
+    exactly); "offsets are unique and contiguous under 1000 concurrent appends" (an invariant that must hold
+    every run → assert exactly, no tolerance). A tight bound is *correct* here.
+- **Probabilistic / statistical property → assert it as a generous range.** The code only promises a
+  *tendency*, not an exact number, so demanding an exact number turns normal statistical variation into a
+  failure — that is precisely how you manufacture a flaky test.
+  - Example: hash distribution. Hashing 1000 distinct keys over 4 partitions will **never** land exactly
+    250/250/250/250 — you get something like 248/251/263/238. That spread is the nature of statistics, not a
+    bug. If the test asserted "each partition 245–255", a healthy run producing 263 would fail → flaky, and it
+    would be **the test's fault**, not the code's. Asserting a **generous band** (each partition 150–350 for
+    1000 keys) is not "loose" — it is the *accurate* expression of what the hash actually guarantees:
+    "reasonably even, never all piled into one partition." It still catches the real failure mode (a broken
+    hash dumping 900 keys into one partition) while ignoring meaningless jitter.
+
+### The mental model
+Ask: **"What does the code actually guarantee?"** Assert that, no more, no less.
+- Guarantees an exact result → tight assertion (and a loose one would be a weakness).
+- Guarantees only a tendency → ranged assertion (and a tight one would be a flaky bug *in the test*).
+
+Avoiding flakiness is therefore not a goal in itself that you reach by "being lenient" — it is the natural
+result of asserting the property the code truly has. A medical analogy: testing for "normal body temperature"
+as *exactly* 36.5 °C would flag a perfectly healthy 36.7 as abnormal; the *accurate* test is a range
+(36–37.5). Temperature naturally varies; so does a hash distribution. (Flumewright examples: 09 FIX-008 — an
+integration test made robust with a bounded timeout instead of an unbounded wait — is the same idea on the
+timing axis: assert "arrives within a bound", not "arrives at an exact instant".)
+
+---
+
 ## 11.7 Dev environment: containers, Linux capabilities & Git file mode
 
 **Why this is here:** development moved into a VS Code **dev container** (09 DEC-009). Three concepts
