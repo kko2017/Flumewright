@@ -22,8 +22,9 @@ public class MessageBusService : MessageBus.MessageBusBase
             headers[header.Key] = header.Value;
         }
 
-        var offset = await _topicStore.PublishAsync(
+        var (partition, offset) = await _topicStore.PublishAsync(
             request.Topic,
+            request.PartitionKey.Memory,
             headers,
             request.Payload.Memory,
             context.CancellationToken);
@@ -33,6 +34,7 @@ public class MessageBusService : MessageBus.MessageBusBase
             ClientMsgId = request.ClientMsgId,
             Topic = request.Topic,
             Offset = offset,
+            Partition = partition,
             Accepted = true
         };
     }
@@ -41,12 +43,13 @@ public class MessageBusService : MessageBus.MessageBusBase
     {
         var messages = _topicStore.SubscribeAsync(request.Topic, context.CancellationToken);
 
-        await foreach (var message in messages)
+        await foreach (var message in messages.WithCancellation(context.CancellationToken))
         {
             var envelope = new DeliverEnvelope
             {
                 Topic = request.Topic,
                 Offset = message.Offset,
+                Partition = message.Partition,
                 Payload = ByteString.CopyFrom(message.Payload.Span)
             };
 
@@ -55,7 +58,7 @@ public class MessageBusService : MessageBus.MessageBusBase
                 envelope.Headers[header.Key] = header.Value;
             }
 
-            await responseStream.WriteAsync(envelope);
+            await responseStream.WriteAsync(envelope, context.CancellationToken);
         }
     }
 }

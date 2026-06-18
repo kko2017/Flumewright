@@ -24,6 +24,10 @@ than re-read every diff, then spot-check the high-risk steps.
   that the plan does not cover. Do not push forward on a guess. Report the blocker and wait.
 
 ## Self-report (at the checkpoint)
+**Report inline in the conversation — do NOT create a report file** (no `checkpoint_*.md` or similar).
+The self-report is for the human to read now; if anything is worth keeping, the human copies it into the
+verification log (08) by hand. Writing report files clutters the workspace and risks accidental commits.
+
 For each step since the last checkpoint, report concisely:
 - **What** the step did (file(s) touched, the change in one line).
 - **Decisions / assumptions** made (anything not spelled out in the instruction).

@@ -5,8 +5,7 @@
 > "Future impact" is the point: it tells a later milestone (or a later you) what to revisit, saving
 > rediscovery cost. For large architectural decisions, use ADRs in `docs/decisions/` instead.
 >
-> Repo location (English version): `docs/decisions/decision-and-fix-log.md` (companion to the ADRs).
-> The Korean version (`09-decision-and-fix-log.ko.md`) is a personal-reference draft, not committed.
+> Repo location: `docs/decisions/decision-and-fix-log.md` (companion to the ADRs).
 
 ---
 
@@ -420,9 +419,9 @@
   main via a **merge commit** (not squash — preserves the per-unit commit history that 03 §1 depends on).
 - **NOT done (intentionally):** no `v0.1.0` tag — that is the **Phase 1** release marker (after M6), not a
   per-milestone action. M1 is one of six milestones in Phase 1.
-- **Next:** M2 — topic/partition + bounded channels + routing + multi-threaded consume loops (01 roadmap §14
+- **Next:** M2 — topic/partition + per-partition append-only log + offset-based consumption + routing (01 roadmap §14
   / §5 component "Router/Partitioner" + "Topic/Partition Store"). New branch `feat/m2-partitioning`, new
-  step-by-step instruction doc (`10-phase1-m2-*`).
+  step-by-step milestone instruction (personal, not committed).
 
 ## DEC-013 — Risk-based checkpoint verification (replaces per-step hand verification)
 - **Milestone/Step:** workflow decision, before M2 (applies M2 onward)
@@ -479,3 +478,156 @@
   checkpoint-review / zoomout-review actually fire). Committed under `chore/add-skills` (skills + GEMINI.md)
   and recorded here. Skills/rules evolve as the workflow does; keep them as pointers so doc changes don't
   strand a stale copy.
+
+## DEC-015 — Delivery model confirmed: log/pull (Kafka-style), not push; M2 redefined
+- **Milestone/Step:** M2, mid-flight (during CHECKPOINT A review). Applies M2 onward; touches M1's store mechanism.
+- **Type:** architecture decision (foundational)
+- **Context — how this surfaced:** during the CHECKPOINT A review of the partitioned store, a question about
+  buffer-full policy (DropWrite vs DropOldest, and what "LATEST" means) exposed a deeper issue: the project
+  had been mixing two delivery models. The plan named Kafka as the primary model (partitioned **log**, offset,
+  replay), but M1/M2 were implemented **push-style** (publish writes into per-subscriber channels; no
+  retention; late subscribers get nothing). The "buffer full → drop" debate is itself a symptom of the push
+  model — a log model doesn't have that problem.
+- **Clarification reached:** Pub/Sub is a *pattern* (decoupled publishers/subscribers, topic-based fan-out).
+  Both Kafka and Google Pub/Sub implement that pattern; they differ in *how messages are retained and
+  delivered* (Kafka = append-only log + consumer pull by offset; Google Pub/Sub-style = push + per-subscriber
+  buffer). These are different mechanics and don't cleanly combine in one store. "Kafka also fans out" is
+  correct — it fans out by letting many consumers read the same log at their own offsets.
+- **Decision:** build the broker on the **log/pull model** (Kafka-style):
+  - Publish **appends** to a per-partition **append-only log** (in-memory, Phase 1).
+  - Subscribers **pull** by holding their own **offset (cursor)**; they read records in order from the log.
+  - Fan-out = many subscribers reading the same partition log at their own offsets.
+  - No per-subscriber bounded channel, no drop policy, no buffer backpressure — those were push-model artifacts
+    and are removed. (The earlier FullMode Wait/DropWrite/DropOldest question is therefore moot.)
+  - offset and partition now carry real meaning (log position, replay). at-least-once follows from **offset
+    commit** in M3 (the Kafka form of ack) — so the at-least-once / ack work studied in M1 is NOT discarded;
+    it re-emerges as offset commit. Exactly-once stays out of scope; consumer-side idempotency stays the user's
+    responsibility.
+- **Retention scope:** Phase 1 keeps the in-memory log for the **process lifetime** (no eviction policy yet).
+  Retention/eviction (time/size) and disk persistence (WAL + segments) are **Phase 2**. Replay (offset-based
+  re-read) is naturally enabled by the log but the start-position API is deferred (proto already reserves
+  `StartPosition`).
+- **Handling the in-flight M2 work (option B):** stay on `feat/m2-partitioning`. **Keep Step 1 (proto fields)
+  and Step 2 (PartitionRouter)** — both are valid in the log model (routing decides which log to append to).
+  **Replace Step 3** (the channel-based store) with a log-based store in a new commit
+  (`refactor(broker-core): replace channel-based store with append-only log model`). The transition is kept in
+  history on purpose — together with this DEC it documents a controlled course-correction, not a cover-up.
+- **Rationale:** the project's motive is a usable Pub/Sub bus; the log model makes offsets/partitions
+  meaningful, removes the incoherent push/pull blend, and is the more instructive build. The cost is
+  re-doing the store's storage/delivery mechanism (M1's channel fan-out included), but partition/offset/proto/
+  router/gRPC-contract/tests-skeleton/harness all carry over.
+- **Docs impact:** 01 plan §3/§4/§5/§6/§10/§14 updated; M2 redefined (v0.7). 02 study-notes to add push-vs-pull
+  + log-as-cursor + at-least-once↔offset-commit. 10 M2 instruction to be rewritten for the log model. Résumé
+  wording shifts from "Kafka + Pub/Sub blend" toward "log-based streaming bus (Kafka-style)".
+
+## DEC-016 — Tool Permission: strict → always-proceed (control re-placed, not relaxed)
+- **Milestone/Step:** M2 (before Step 3 implementation). Tooling/workflow decision.
+- **Type:** process/tooling decision
+- **Decision:** Switch the Antigravity CLI `Tool Permission` from `strict` (approve every tool call) to
+  `always-proceed` (the CLI runs tools without a per-call prompt). The menu offered only these two levels —
+  there is no "auto-approve reads only" middle option — so per-call approval of even read-only actions
+  (ListDir, Read, grep) was pure friction with little control value.
+- **Why this is NOT a loss of control:** per-call approval is only one of several control layers, and the
+  highest-friction one. The real safety net stays intact:
+  - **git remote is CLI-forbidden** (GEMINI.md: local git only; never push/pull/fetch/remote/gh). The user
+    does all remote ops; push also needs the user's credentials. So the CLI cannot ship anything outward.
+  - **main branch protection** (DEC-012): PR + green CI required; the CLI cannot touch main directly.
+  - **per-step commits + `git show --stat` after each**: every change is visible and individually revertible.
+  - **checkpoint verification** (DEC-013): the CLI stops at risk-placed checkpoints and self-reports; the
+    human reviews the high-risk steps. **This is the true control point.**
+  - **dev container isolation** + **pre-commit gate** (build + fast tests must pass to commit).
+  - So control moves from "approve every tool call" to "review at checkpoints" — a **re-placement, not a
+    relaxation**.
+- **Distinct from `--dangerously-skip-permissions`:** that CLI flag bypasses all permission checks and is
+  still forbidden (GEMINI.md). `always-proceed` is a setting-level permission level; other settings and the
+  GEMINI.md rules still apply. The git-boundary and checkpoint rules are unchanged.
+- **Guardrail that must NOT be relaxed alongside this:** checkpoint verification (DEC-013). Tool prompts are
+  gone, but the CLI must still STOP at each checkpoint, self-report, and wait for human review before
+  proceeding. If that ever slips, this decision should be revisited.
+- **Sandbox note:** `proceed-in-sandbox` was not usable — it only auto-proceeds when Sandbox Mode is ON, and
+  enabling the CLI sandbox on top of the dev container risks breaking builds/tests (esp. the Kestrel real-port
+  integration test). So Sandbox stays OFF; `always-proceed` is the chosen path instead.
+- **Rationale:** the per-call friction outweighed its marginal control value given the other layers. This is a
+  deliberate friction/control trade-off, recorded so the reasoning is auditable.
+
+## FIX-009 — Checkpoint A caught a LATEST-semantics bug in the channel store (became the trigger for DEC-015)
+- **Milestone/Step:** M2 Step 3 (original channel-based version), found at CHECKPOINT A.
+- **Type:** `[correctness/bug]` — caught by checkpoint review, not by passing tests.
+- **What:** the first channel-based Step 3 store built one bounded channel per partition and drained them into
+  a single **unbounded** merged channel via background tasks. Because the merge channel was unbounded, the
+  intended bounded/LATEST drop semantics never applied — a slow subscriber would buffer without bound. All
+  unit tests passed; the defect surfaced only on human review at the checkpoint.
+- **Significance:** this is the **first correctness bug caught by the risk-based checkpoint model (DEC-013)** —
+  evidence the checkpoint is doing its job (a passing test suite was not sufficient). The follow-up debate over
+  the buffer-full policy (DropWrite vs DropOldest, the meaning of "LATEST") then exposed that the project was
+  mixing push and log delivery models, which led directly to **DEC-015** (confirm the log/pull model).
+- **Resolution:** superseded by the log model — the channel store (and the whole drop-policy question) was
+  replaced by the per-partition append-only log in the new Step 3 (commits 35870fe, 0da4516). In the log model
+  a slow subscriber simply lags by offset; there is no buffer to overflow, so the bug class no longer exists.
+- **Lesson:** "a passing test/success report is a starting point, not a conclusion" (08 principle) held up —
+  code review at the checkpoint caught what green tests missed.
+
+## DEC-017 — Planned CI/CD quality-gate hardening (reserved; execute after M2)
+- **Milestone/Step:** reserved during M2; **to be executed in the infrastructure interval after M2 merges,
+  before M3** (the same "separate infra work from a code milestone" pattern used between M1 and M2). Coyote is
+  deferred further, to **after M3**.
+- **Type:** process/tooling decision (reservation — not yet implemented)
+- **Motivation:** "build + unit tests pass" is a weak quality gate. The repo is **public**, and the project
+  doubles as a portfolio piece, so visible, industry-standard quality signals matter. Goal = overall quality,
+  not just one metric.
+- **Planned additions (after M2):**
+  - **Coverage — Coverlet** (`coverlet.collector`, `dotnet test --collect:"XPlat Code Coverage"`, Cobertura
+    output). Gate strategy: **start the threshold BELOW the current measured number and raise it gradually** —
+    coverage is a tool to surface untested code, not a score to chase. **Exclude** generated proto code,
+    `Program.cs` (host bootstrap), and the Observability/Security skeletons from the denominator, or the % is
+    unfairly low. Note: `Directory.Build.props` already enables analyzers + warnings-as-errors, so some smell
+    detection is already in place.
+  - **SonarCloud — primary quality gate** (public repo = free). Overall dashboard: coverage, code smells,
+    duplication, vulnerabilities, maintainability + a README **badge** (strong portfolio signal). This is the
+    main gate.
+  - **CodeQL — security SAST layer** (public repo = free, native GitHub Actions, results in the Security tab).
+    Complements SonarCloud (deep security vs overall quality); the two don't overlap.
+  - **Dependabot:** turn on (free dependency-vulnerability PRs), but **do NOT feature it as a selling point** —
+    it's a background bot, not a CI-pipeline step, so its portfolio value is low. Security hygiene only.
+- **Concurrency analysis — explicitly scoped:** concurrency bugs (e.g. the TCS wakeup class) are NOT caught by
+  static analysis or by API-functional tools. They are addressed by **checkpoint code review + concurrency
+  unit tests (e.g. 1000 concurrent appends) + load/stress tests (load.yml, indirect exposure)**, all already
+  planned/in place. **Microsoft Coyote** (systematic concurrency-testing framework that can deterministically
+  find races/deadlocks) is the real tool for direct detection and has **high portfolio value**, but carries a
+  learning curve → **adopt after M3** (M3 adds consumer-group/offset-commit concurrency, so Coyote lands
+  naturally there). **Newman/Postman is rejected** — it is REST/HTTP-oriented (we are gRPC + protobuf) and is
+  an API-functional runner, not a concurrency analyzer; it does not fit either of our needs.
+- **Deliverable:** a dedicated CI/CD doc (`docs/guides/ci-cd-and-quality-gates.md`) capturing the pipeline,
+  the gates, the coverage strategy, and the concurrency-testing approach. Work happens on a separate branch
+  (`chore/ci-quality-gates`), kept apart from code milestones.
+
+## DEC-018 — M2 end-of-milestone zoom-out review: outcome & dispositions
+- **Milestone/Step:** M2 Step 6 part (b), before merge to main. Same protocol as DEC-011 (M1 zoom-out):
+  scope-fenced to M2, report-only, three-bucket classification, deferred items guarded by this log.
+- **Type:** review outcome / dispositions
+- **Scope:** partitioning + append-only log + offset-based consumption. Deferred items (consumer groups,
+  offset commit/ack/DLQ, retention/eviction, seek/replay API, streaming publish) were explicitly excluded
+  per the design note `docs/design/m2-partitioning.md` and were NOT treated as defects.
+- **[correctness/bug]: none.** Concurrency primitives (per-partition lock, Interlocked round-robin, the TCS
+  re-check-under-lock notify-all) and the gRPC cancellation path reviewed clean; the 25-test suite plus
+  Checkpoints A/B already exercised the guarantees.
+- **[consistency/cleanup]: 2 found, both fixed (approved):**
+  - **A — dead `channelCapacity` constructor parameter** (push-model remnant, unused after the log
+    migration). Removed: constructor `(int defaultPartitionCount)`, parameterless chain `this(4)`, and all
+    14 unit-test call sites updated (test logic unchanged). Commit `7df5563`
+    (`refactor(broker-core): drop dead channelCapacity constructor param`).
+  - **B — no hash-distribution uniformity test** (same-key determinism was tested; even spread was not).
+    Added `ForKey_UniformDistribution_WithinGenerousVariance` — 1000 distinct keys over 4 partitions, each
+    partition's share asserted within a **generous** band (150–350, expected ~250). Commit `670b020`
+    (`test(router): assert hash distribution stays reasonably uniform`).
+- **Lesson recorded (test design):** B surfaced a broader principle now written up in study-notes §11.65 —
+  **deterministic properties get tight assertions, probabilistic ones get generous ranges.** Asserting an
+  exact share (e.g. 245–255) on a statistical distribution would turn normal variance into a **flaky** test,
+  and a flaky test's fault lies in the test, not the code. Flaky tests erode CI trust (red stops meaning
+  "bug"), so they are worse than no test. The generous band is the *accurate* expression of what the hash
+  guarantees ("reasonably even"), not a loose one. (Same idea on the timing axis: FIX-008's bounded timeout.)
+- **[out-of-scope — record only]:** consumer groups/assignment (M3), offset commit/ack/DLQ (M3),
+  retention/eviction + disk persistence (Phase 2), seek/replay API over gRPC (Phase 2; retained-read is
+  validated at the store level for now), unary publish (M5). All already tracked; no new deferral introduced.
+- **Disposition:** fixes A and B approved and committed on `feat/m2-partitioning`. Next: docs sync (study-notes
+  §11.65 + this entry), then user merges M2 to main via a merge commit. **No tag** (v0.1.0 = Phase 1 / M6).

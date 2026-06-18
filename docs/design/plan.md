@@ -1,4 +1,4 @@
-# Distributed Message Bus — Execution Plan v0.6
+# Distributed Message Bus — Execution Plan v0.7
 
 > Codename: **Flumewright** (short alias: **fw** — used in the proto package `fw.v1`, etc.)
 > Stack: C# / .NET 8.0 (LTS) / gRPC (HTTP/2) / Protobuf
@@ -8,18 +8,18 @@
 
 ## 0. Document Map (Single Source of Truth)
 
-The documents below collectively define the project's source of truth. Only the English versions
-are committed (kept under `docs/`); Korean versions are for personal reference. When this plan
-references another document, it points to the filenames below.
+The documents below define the project's source of truth, kept under `docs/`. When this plan references
+another document, it points to its `docs/` path.
 
-| Document | English file (repo) | Role |
-|----------|---------------------|------|
-| Execution Plan (this document) | `01-execution-plan.en.md` → `docs/design/plan.md` | Top-level reference for scope, architecture, roadmap |
-| Study Notes | `02-study-notes.en.md` → `docs/learning/study-notes.md` | Learning material on PubSub / message bus concepts |
-| Version Control & Validation Guide | `03-version-control-guide.en.md` → `docs/guides/version-control-and-validation-guide.md` | Branch, commit, and test-gate rules |
-| Phase 0 Scaffolding Instructions | `04-phase0-scaffolding.en.md` | Step-by-step CLI commands for initial setup |
-| CLI Master Instruction & CI/CD | `05-phase0-cli-master-instruction.en.md` | CLI command prompts + Release/dev-artifact workflows |
-| README | `06-README.en.md` → `README.md` | Repository entry document |
+| Document | Path in repo | Role |
+|----------|--------------|------|
+| Execution Plan (this document) | `docs/design/plan.md` | Top-level reference for scope, architecture, roadmap |
+| Study Notes | `docs/learning/study-notes.md` | Learning material on PubSub / message bus concepts |
+| Version Control & Validation Guide | `docs/guides/version-control-and-validation-guide.md` | Branch, commit, and test-gate rules |
+| AI Collaboration | `docs/ai-collaboration.md` | How this project is built with an AI agent under a human-in-the-loop workflow |
+| Architecture Decision Records | `docs/decisions/NNNN-*.md` | Point-in-time design decisions (e.g. opaque payload, at-least-once) |
+| Decision & Fix Log | `docs/decisions/decision-and-fix-log.md` | Running log of decisions and fixes |
+| README | `README.md` | Repository entry document |
 
 > All document references in this (English) version point to `*.en.md`.
 
@@ -46,11 +46,21 @@ Key non-functional requirements:
 
 | Candidate | Decision | Rationale |
 |-----------|----------|-----------|
-| **Apache Kafka** | Primary conceptual model | Partitioned log, offset, consumer group, replay align with requirements. Scoped to "Kafka-lite" |
-| **Google Pub/Sub** | Partial adoption | Topic/subscription separation, ack/nack flow control, at-least-once semantics reflected in the interface |
+| **Apache Kafka** | **Primary model (confirmed)** | Partitioned **append-only log**, offset-based consumption, consumer groups, replay. This is the core architecture. Scoped to "Kafka-lite" |
+| **Google Pub/Sub** | Pattern + delivery-guarantee influence | Same Pub/Sub pattern (topic/subscription, fan-out); at-least-once delivery. In a log model this is realized via **offset commit** (the Kafka form of ack), not push-style ack/nack |
 
-> Conclusion: Build a lightweight self-hosted broker combining **Kafka's architectural concepts**
-> with **Pub/Sub's delivery semantics**. No dependency on external Kafka/PubSub (the goal is our own bus).
+> **Conclusion (model confirmed):** a lightweight self-hosted broker built on the **log model** —
+> publish *appends* to a per-partition append-only log; subscribers *pull* by holding their own offset
+> (cursor); fan-out is many subscribers reading the same log at their own offsets. This is the Kafka
+> architecture, not the push-and-forget delivery of a classic broker.
+>
+> Both Kafka and Google Pub/Sub implement the **Pub/Sub pattern** (decoupled publishers/subscribers,
+> topic-based fan-out); they differ in *how messages are retained and delivered*. The initial idea was to
+> blend both delivery models, but they rest on different mechanics (log + pull vs push + buffer) and don't
+> cleanly combine in one store. We commit to the **log/pull model** — offsets and partitions then carry
+> real meaning (log position, replay), and at-least-once follows naturally from offset commit. The
+> push-model concerns (per-subscriber buffers, drop policy, buffer backpressure) fall away.
+> No dependency on external Kafka/PubSub — the goal is our own bus. (See 09 DEC-015.)
 
 ---
 
@@ -63,12 +73,13 @@ The three axes are **independent** and arranged as follows.
 |------|---------|---------|
 | Process isolation (separate broker + gRPC) | ✅ Included | — |
 | High performance (100K, multi-threading, bidi streaming) | ✅ Included | Tuning |
-| Message storage location | In-Memory (bounded channel) | Disk persistence (WAL + segment, replay, restart survival) |
+| Message storage location | In-Memory **append-only log** (per-partition) | Disk persistence (WAL + segment, replay, restart survival) |
 
 > Phase 1: The broker runs as a separate process; external pub/sub processes connect via mTLS gRPC
-> and 100K messages are processed across threads. On broker shutdown, unprocessed in-memory messages
-> are lost (an intended constraint).
-> Phase 2: Append-only disk records → restart survival + replay.
+> and 100K messages are processed across threads. Messages are **appended to a per-partition in-memory
+> log and retained** (Phase 1 keeps them for the process lifetime — no eviction policy yet). Subscribers
+> read from the log by offset. On broker shutdown the in-memory log is lost (an intended Phase-1 constraint).
+> Phase 2: Append-only disk records (WAL + segments) → restart survival + retention/eviction policy + replay.
 
 ### 3.2 Delivery Guarantee
 - **At-least-once + ack/nack**
@@ -82,13 +93,13 @@ The broker **never deserializes** user message content.
 - User payloads are wrapped as opaque `bytes` + metadata (headers).
 - The broker routes using only the routing key (topic, partition key) and headers.
 - Therefore the broker is unaffected by whichever `.proto` a Publisher/Subscriber uses.
-- (Concept explained in `02-study-notes.en.md` Section 9. Rationale recorded in ADR 0001.)
+- (Concept explained in `docs/learning/study-notes.md` Section 9. Rationale recorded in ADR 0001.)
 
 ### 3.4 Transport Patterns (gRPC)
 | Operation | Pattern | Notes |
 |-----------|---------|-------|
 | Publish | client streaming / bidi | Batched send + flow control; no per-message unary |
-| Subscribe | server streaming | Broker → consumer push, with flow control |
+| Subscribe | server streaming | Broker streams log records to the consumer from its current offset (cursor); the consumer advances through the partition log |
 | Ack/Nack | message within bidi or a separate stream | Keyed by delivery_id |
 | Admin (topic creation, etc.) | unary | Low-frequency control |
 
@@ -98,7 +109,7 @@ The broker **never deserializes** user message content.
 
 | Feature | Phase 1 | Phase 2 | Notes |
 |---------|---------|---------|-------|
-| Partitioning | **M2** — topic→N partitions, hash/round-robin routing, per-partition offset + bounded channel, parallel consume loops | (count change) | Per-partition ordering; partition count fixed per topic in Phase 1 |
+| Partitioning | **M2** — topic→N partitions, hash/round-robin routing, **per-partition append-only log + per-partition offset**, subscribers consume by **pulling from their offset (cursor)**, parallel per-partition reads | (count change) | Per-partition ordering; a subscriber reads ALL partitions of a topic; partition count fixed per topic in Phase 1 |
 | Consumer group | **M3** — in-group partition assignment + distribution (static) | Rebalancing maturity | Splits a topic across group members; built on top of M2's partitions, NOT part of M2 |
 | mTLS certificate security | ✅ Required | Cert rotation / CRL | Mutual authentication |
 | Schema Registry | Minimal interface only | Full implementation (validation/compatibility) | Payload stays opaque; schema_id offers optional type safety |
@@ -116,20 +127,20 @@ The broker **never deserializes** user message content.
  ┌─────────────┐                              │  │  Auth (mTLS) / AuthZ    │  │
  │ Publisher B │ ───────────────────────────▶ │  │  Router / Partitioner   │  │
  │ (proto Y)   │                              │  │  Topic → Partitions     │  │
- └─────────────┘                              │  │   (bounded channels)    │  │
+ └─────────────┘                              │  │  (append-only logs)     │  │
  ┌─────────────┐                              │  │  Delivery + Ack/Nack    │  │
- │ Subscriber 1│ ◀──────(server stream)────── │  │  Metrics / Logging      │  │
+ │ Subscriber 1│ ◀──(server stream by offset)─ │  │  Metrics / Logging      │  │
  │ (group G1)  │                              │  └────────────────────────┘  │
  └─────────────┘                              └──────────────────────────────┘
 ```
 
 ### Component Responsibilities
-- **gRPC Endpoint Layer**: connection acceptance, stream management, backpressure signaling.
+- **gRPC Endpoint Layer**: connection acceptance, stream management.
 - **Auth**: mTLS client certificate verification, (optional) per-topic authorization.
-- **Router / Partitioner**: topic + partition key → target partition (hash-based).
-- **Topic/Partition Store**: a bounded channel + offset counter per partition.
-- **Delivery Manager**: per-consumer-group partition assignment, push, in-flight tracking, ack/nack/redelivery.
-- **Observability**: throughput/latency/queue-depth/in-flight/drop metrics, structured logs.
+- **Router / Partitioner**: topic + partition key → target partition (hash-based; round-robin if no key).
+- **Topic/Partition Store**: a **per-partition append-only log** (ordered records) + an offset counter. Publish appends; subscribers read by offset.
+- **Delivery Manager**: streams log records to each subscriber from its offset (cursor); per-consumer-group partition assignment (M3); in-flight tracking + ack via offset commit / redelivery (M3).
+- **Observability**: throughput/latency/log-depth/lag/in-flight metrics, structured logs.
 
 ---
 
@@ -137,11 +148,11 @@ The broker **never deserializes** user message content.
 
 | Technique | Description |
 |-----------|-------------|
-| Bounded channels (`System.Threading.Channels`) | Per-partition queues, minimal contention |
-| Backpressure | On queue limit, signal flow control to the publish stream to prevent unbounded buildup |
+| Per-partition append-only log | Append is O(1) and lock-light; reads are sequential by offset |
+| Backpressure (M5) | Flow control on the *publish* stream (server-streaming send) when a consumer's read lags — not a per-message drop. Real backpressure is M5 |
 | Batching | Batch publish/deliver to reduce overhead |
 | Partition parallelism | Partition count = unit of parallelism, scales with cores |
-| Thread pool tuning | Dedicated consume loops + ThreadPool, avoiding excessive async context switching |
+| Thread pool tuning | Dedicated read loops + ThreadPool, avoiding excessive async context switching |
 | Object pooling / `ArrayPool` | Buffer reuse to reduce GC pressure |
 | Zero/low-copy | Opaque payloads → minimal deserialization/copying |
 
@@ -256,12 +267,12 @@ Flumewright.sln
 ## 10. Testing & Validation Strategy
 
 Tests are classified via `[Trait("Category", ...)]` into Unit / Integration / Load,
-running different sets at each gate (Section 12.3). For per-gate rules, see `03-version-control-guide.en.md` Sections 5–6.
+running different sets at each gate (Section 12.3). For per-gate rules, see `docs/guides/version-control-and-validation-guide.md` Sections 5–6.
 
 ### 10.1 Unit
 - Router/Partitioner: same key → same partition, distribution uniformity.
-- Queue/Backpressure: flow control triggers at the limit.
-- Delivery: in-flight removal on ack, redelivery on nack/timeout, in-group distribution.
+- Log/offset: append assigns increasing per-partition offsets; subscriber reads records in offset order from its cursor; per-partition offsets are independent.
+- Delivery: in-flight removal on ack (offset commit), redelivery on nack/timeout, in-group distribution (M3).
 - Tools: xUnit + FluentAssertions; prefer deterministic simulation for concurrency.
 
 ### 10.2 Integration / System
@@ -296,7 +307,7 @@ running different sets at each gate (Section 12.3). For per-gate rules, see `03-
 - Use a **repository `docs/` folder instead of a Wiki**. Versioned in the same commits/PRs as code,
   preventing code-doc drift and fitting the CLI workflow.
 - Record milestone design decisions in `docs/design/mN-*.md`; capture significant decisions as **ADRs**
-  (`docs/decisions/NNNN-*.md`). For the ADR template, see `05-phase0-cli-master-instruction.en.md` Section A.
+  (`docs/decisions/NNNN-*.md`). For the ADR format, follow the existing records `docs/decisions/0001-*.md` and `0002-*.md` as the template.
 - Bundle code and docs in the **same commit/PR**.
 - Update the README "Quick Start" whenever a feature becomes functional.
 - **Language policy:** all repository text is in **English** — README, docs, ADRs, commit messages,
@@ -317,7 +328,7 @@ docs/
 ## 12. Development Process (Version Control & Validation)
 
 > Core principle: **one commit = one validated small change.** Do not build everything at once.
-> See `03-version-control-guide.en.md` for full rules.
+> See `docs/guides/version-control-and-validation-guide.md` for full rules.
 
 ### 12.1 Branch Strategy
 - `main` is always green. Work on `feat/mN-...` branches per milestone, then merge.
@@ -350,7 +361,7 @@ docs/
 | `load.yml` | manual / nightly cron | Performance & stress tests |
 | `release.yml` | **push `v*.*.*` tag** | Release build + packaging + publish to Releases tab |
 
-- Full workflow YAML and the dev-artifact/Release supplements: see `05-phase0-cli-master-instruction.en.md` Section B and `04-phase0-scaffolding.en.md` Section 4.
+- The actual workflow YAML lives under `.github/workflows/` in the repo.
 - Action versions: `actions/checkout@v6`, `actions/setup-dotnet@v5`, `actions/cache@v4`,
   `actions/upload-artifact@v4`, `softprops/action-gh-release@v3`.
 - **Dev build**: each main CI uploads the broker artifact to Actions Artifacts (download the latest dev build).
@@ -362,7 +373,7 @@ docs/
 ## 14. Roadmap
 
 ### Phase 0 — Scaffolding (CLI-executed, stop before push)
-> Step-by-step commands: `04-phase0-scaffolding.en.md`. The CLI command prompt: `05-phase0-cli-master-instruction.en.md` Section D.
+> Phase 0 is complete; the resulting configuration lives in the repo root and `.github/`.
 - Solution/project structure, .gitignore/editorconfig/global.json/Directory.Build.props.
   - `.gitignore` blocks .NET build output **plus** certs/keys (`certs/`, `*.pfx`, `*.pem`, `*.key`, `*.crt`) and logs (`logs/`, `*.log`).
   - `global.json` pins .NET 8 SDK (`rollForward: latestFeature`); `Directory.Build.props` sets net8.0 / Nullable / `TreatWarningsAsErrors=true` / analyzers for all projects.
@@ -371,9 +382,9 @@ docs/
 - User: create repo → remote → push → branch protection → verify CI.
 
 ### Phase 1 — Core (In-Memory, High Performance, Security)
-- M1: Fixed gRPC contract + broker host startup (plaintext) + simple Pub→Sub passthrough.
-- M2: Topic/partition + bounded channel + routing, multi-threaded consume loops.
-- M3: Consumer group distribution + at-least-once + ack/nack + in-flight + DLQ skeleton.
+- M1: Fixed gRPC contract + broker host startup (plaintext) + simple Pub→Sub passthrough (initial slice; the store evolves to the log model in M2).
+- M2: Topic/partition + **per-partition append-only log + offset-based consumption (pull by cursor)** + routing, parallel per-partition reads.
+- M3: Consumer group distribution + at-least-once (**ack via offset commit**) + in-flight + redelivery + DLQ skeleton.
 - M4: mTLS (mutual certificates), certgen tool. **Follow the Section 7.1 certgen checklist (CA BasicConstraints, server SAN, client EKU, single CA chain).**
 - M5: Bidi/server streaming + batching + backpressure for 100K throughput.
 - M6: Basic metrics/logging + first pass of unit/integration/load tests.
@@ -410,3 +421,4 @@ docs/
 | v0.4 | Added staging note to §10.2 (DEC-007) — M1's integration test starts in-process (real-port Kestrel) with a single message; separate-process/mTLS e2e is the final form at M4/M5. M1's bar is "one message through". |
 | v0.5 | M1 Step 5 done (e2e integration test passes → M1 functional phase complete). Refined §10.2 with the implementation note: the in-process host is built directly via `WebApplication` in an `IAsyncLifetime` fixture, not `WebApplicationFactory` (which conflicts with the real-Kestrel `Program.cs`); bind `IPAddress.Loopback:0` for a dynamic h2c port; the `Http2UnencryptedSupport` switch is unnecessary on .NET 8 (decision-and-fix-log FIX-005 / DEC-008). |
 | v0.6 | M1 milestone closed (merged to main via merge commit; no tag — that is the Phase 1/M6 marker). M1 wrap: dev container adoption (DEC-009/010), pre-commit exec-bit fix (FIX-007), zoom-out review (DEC-011), main branch-protection ruleset (DEC-012). **Clarified the M2/M3 split in §4:** partitioning is M2 (topic→N partitions, routing, per-partition offset + bounded channel, parallel consume loops; a subscriber gets all partitions; count fixed per topic), consumer-group distribution is M3 (built on top of M2) — previously bundled as one "skeleton" row. Bounded-channel backpressure signaling stays in M5 (FIX-002). |
+| v0.7 | **Delivery model confirmed: log/pull (Kafka-style), not push (DEC-015).** Both Kafka and Google Pub/Sub implement the Pub/Sub pattern; they differ in retention/delivery. The early idea of blending both delivery models proved incoherent in one store (log+pull vs push+buffer), so the broker is built on the **log model**: publish appends to a per-partition append-only log; subscribers pull by holding their own offset (cursor); fan-out is many subscribers reading the same log. Offsets/partitions now carry real meaning (log position, replay); at-least-once follows from offset commit (M3). The push-model artifacts (per-subscriber bounded channel, drop policy, buffer backpressure) are removed. **§3/§4/§5/§6/§10/§14 updated accordingly; M2 redefined** (append-only log + offset cursor pull, was bounded channel + consume loops). In-memory log is retained for the process lifetime in Phase 1; retention/eviction + disk persistence are Phase 2. |

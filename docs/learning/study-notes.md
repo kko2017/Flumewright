@@ -78,10 +78,14 @@ What a message bus provides:
 | Load balancing | Consumer group | Subscription |
 | Best learning point | log/partition/group/replay architecture | topic/subscription split, ack/nack semantics |
 
-**Flumewright's choice:**
-Build a lightweight self-hosted broker ("Kafka-lite") that takes Kafka's **architectural concepts**
-(partitioned log, offset, consumer group) as the primary reference, while borrowing Pub/Sub's
-**delivery semantics** (ack/nack, at-least-once) for the interface. No dependency on external Kafka/PubSub.
+**Flumewright's choice (log model confirmed):**
+Both Kafka and Google Pub/Sub implement the **Pub/Sub pattern**; the table above shows they differ in *how
+messages are stored and delivered*. Flumewright is built on the **log model** (Kafka-style): publish appends
+to a per-partition append-only log; subscribers pull by holding their own offset (cursor); fan-out is many
+subscribers reading the same log at their own offsets. This is a deliberate, confirmed choice — not a blend
+of both delivery models (the two don't cleanly combine; log+pull vs push+buffer are different mechanics).
+at-least-once is then realized via **offset commit** (the Kafka form of ack), not push-style ack of
+individual messages. No dependency on external Kafka/PubSub. (See plan §3 and decision-and-fix-log DEC-015.)
 
 ---
 
@@ -119,18 +123,24 @@ Make processing the same message twice yield the same result.
 - Bad: "balance += 100" (twice → +200)
 - Good: "if transaction ID X, set balance to 500" / record processed message IDs and skip duplicates
 
-### Flumewright Behavior
+### Flumewright Behavior (log model)
+In a log model, "ack" is an **offset commit**: the subscriber tells the broker "I've processed up to offset N."
+That commit IS the acknowledgment — it's how at-least-once is realized here, rather than acking each message
+individually as in a push model.
 ```
-broker delivers (assigns delivery_id) → subscriber processes → ack/nack
-   ↑                                                              │
-   └──── if no ack, redeliver after timeout ◀─────────────────────┘
+subscriber reads from its committed offset → processes → commits offset N
+   ↑                                                          │
+   └── on crash/restart, resume from last committed offset ◀──┘  (messages after N are re-read → at-least-once)
 ```
-- The broker tracks sent messages as **in-flight**.
-- ack → remove from in-flight.
-- nack → add to redelivery set immediately.
-- ack timeout → assume dead, redeliver.
-- **Dead Letter Queue (DLQ)**: messages exceeding max redelivery count are isolated to prevent
-  infinite retries.
+- The subscriber's **committed offset** is the durable "up to here is done" marker.
+- If it crashes before committing, it resumes from the last commit and **re-reads** (possible duplicates →
+  idempotency, above).
+- nack / redelivery / **DLQ** (isolating messages that exceed a max-retry count): these are M3 concerns built
+  on top of offset tracking. (Earlier drafts described per-message ack with `delivery_id` and an in-flight set —
+  that was the push-model framing; the log model centers on the committed offset instead. See DEC-015.)
+- Because the log is retained (Phase 1: process lifetime), a slow subscriber is never "dropped" — it simply
+  has a lower committed offset and catches up at its own pace. (Contrast: a push model with a bounded buffer
+  must drop or block when the buffer fills; the log model has no such dilemma.)
 
 **Parameters to set:** ack timeout (wait duration), max redelivery count.
 
@@ -249,23 +259,56 @@ Metrics reveals "p99 latency spiked"
 
 A mechanism solving scalability (load balancing) and ordering at once. Kafka's core idea.
 
+### Push vs Pull — the model Flumewright uses
+There are two ways a broker gets messages to subscribers:
+- **Push model** (e.g. classic brokers): the broker *pushes* each message into a per-subscriber buffer/queue.
+  No retention — once delivered it's gone. A slow subscriber fills its buffer → the broker must **drop or
+  block**. Late subscribers get nothing from before they connected.
+- **Pull model** (Kafka, **Flumewright**): the broker *appends* messages to a per-partition **log** and keeps
+  them. Each subscriber *pulls* by holding its own **offset** (a cursor = "next index I will read"). A slow
+  subscriber just has a lower offset and catches up later — nothing is dropped. Fan-out = many subscribers
+  reading the **same log** at their **own offsets**.
+
+Flumewright uses the **pull/log model**. So "offset" is not a mere sequence label — it is the subscriber's
+read position in the log, and the basis of replay and of at-least-once (via offset commit). (See DEC-015.)
+
 ### Partitioning
-Split one topic into several **partitions**.
-A message goes to a specific partition by the hash of its partition key.
+Split one topic into several **partitions**. Each partition is an **append-only log**.
+A message goes to a specific partition by the hash of its partition key (round-robin if no key).
 ```
-Topic "orders" (3 partitions)
- ├─ Partition 0 : [m1] [m4] [m7] ...
- ├─ Partition 1 : [m2] [m5] [m8] ...
- └─ Partition 2 : [m3] [m6] [m9] ...
+Topic "orders" (3 partitions)   — each partition is an ordered log; subscribers hold an offset per partition
+ ├─ Partition 0 (log) : [off0:m1] [off1:m4] [off2:m7] ...
+ ├─ Partition 1 (log) : [off0:m2] [off1:m5] [off2:m8] ...
+ └─ Partition 2 (log) : [off0:m3] [off1:m6] [off2:m9] ...
 ```
 Two benefits:
-1. **Parallelism/scalability** — one partition is consumed by one consumer at a time. With 3
-   partitions, 3 consumers process concurrently. Partition count = unit of parallelism = the key
-   means of handling a 100K burst.
-2. **Per-partition ordering** — within a partition, messages are delivered in arrival order.
-   Give order-sensitive messages the same partition key
-   (e.g., events for the same order ID → same key → same partition → preserved order).
-   Note: global order *across* partitions is not guaranteed (a trade-off).
+1. **Parallelism/scalability** — partitions are read independently/in parallel. Partition count = unit of
+   parallelism = the key means of handling a 100K burst.
+2. **Per-partition ordering** — within a partition log, records are in append order (by offset). Give
+   order-sensitive messages the same partition key (same order ID → same key → same partition → preserved
+   order). Global order *across* partitions is not guaranteed (a trade-off).
+
+### How routing is decided — partition key present or not
+There is **no separate flag**. The decision is made from the `partition_key` field itself: the publisher
+either fills it or leaves it empty, and the broker branches on that.
+```
+PublishEnvelope.partition_key empty?
+ ├─ NO  (key given)  → hash(key) % N  → same key always lands in the same partition  → ORDER preserved
+ └─ YES (no key)     → round-robin     → spread evenly across partitions             → no ordering promise
+```
+- **The publisher decides per message, by the meaning of the data** — not the topic, and not a flag. The
+  question is "must this message stay ordered relative to others?":
+  - **Needs ordering / grouping → give a key.** Use the identifier of the thing whose events must stay in
+    order: `partition_key = orderId` (an order's create/pay/ship events land together, in order), or
+    `partition_key = userId` (one user's activity stays sequential).
+  - **Order doesn't matter → omit the key.** It is then spread round-robin for even load (independent sensor
+    readings, order-insensitive notifications).
+- So **within one topic** some messages may carry a key and others may not — it is a per-message choice.
+- **Ordering is guaranteed only within a partition, never across the topic.** The *only* way to get ordering
+  is to route related messages to the same partition by giving them the same key. No key = a declaration that
+  order is not needed.
+- Implementation detail: "no key" = an empty `partition_key` (we branch on `IsEmpty`); we don't add a separate
+  "has key" flag. (Kafka behaves the same: keyed record → hash-partitioned; null key → round-robin/sticky.)
 
 ### Consumer Group
 Group several subscribers consuming the same topic.
@@ -293,12 +336,13 @@ Topic "orders" ──┤
   coexist on one topic.
 
 ### Flumewright Stages
-- **M2 (partitioning):** topic→N partitions, key→partition routing (hash; round-robin if no key),
-  per-partition offset + bounded channel, parallel per-partition consume loops. A subscriber receives ALL
-  of a topic's partitions at this stage. Partition count is fixed per topic.
+- **M2 (partitioning):** topic→N partitions, key→partition routing (hash; round-robin if no key), each
+  partition is a **per-partition append-only log with its own offset**; subscribers **pull by offset (cursor)**,
+  partition logs read in parallel. A subscriber receives ALL of a topic's partitions at this stage. Partition
+  count is fixed per topic. (No per-subscriber buffer/drop — that was the old push framing; see DEC-015.)
 - **M3 (consumer group):** in-group partition assignment + distribution (static first) — group members
-  split the topic's partitions. This is built ON TOP OF M2 and is a separate milestone, not part of M2.
-- **Phase 2:** rebalancing maturity — dynamic reassignment on member join/leave, safe handover.
+  split the topic's partitions; at-least-once via **offset commit**. Built ON TOP OF M2, a separate milestone.
+- **Phase 2:** rebalancing maturity (dynamic reassignment), retention/eviction + disk persistence, replay.
 
 ---
 
@@ -336,7 +380,7 @@ Pattern choice matters for high throughput.
 | Pattern | Form | Use in the message bus |
 |---------|------|------------------------|
 | Unary | 1 request → 1 response | Low-frequency control (topic creation, etc., admin) |
-| Server streaming | 1 request → N responses | **Subscribe** (broker pushes continuously to consumer) |
+| Server streaming | 1 request → N responses | **Subscribe** (broker streams log records to the consumer from its offset) |
 | Client streaming | N requests → 1 response | Batch upload |
 | Bidi streaming | N requests ↔ N responses | **Publish** (batch + flow control), concurrent ack handling |
 
@@ -350,17 +394,19 @@ Calling unary once per message for 100K collapses under connection/handshake ove
 
 | Technique | Description |
 |-----------|-------------|
-| **Bounded Channels** (`System.Threading.Channels`) | Per-partition producer/consumer split queue, minimal lock contention |
-| **Backpressure** | On queue limit, signal flow control back to the publish side → prevents unbounded buildup |
+| **Per-partition append-only log** | Append is O(1) and lock-light; reads are sequential by offset. Partitions are independent → parallel append/read |
+| **Backpressure (M5)** | Flow control on the *publish* stream when a consumer's reads lag the log — a "slow down" signal to the producer, NOT a per-message drop. Real backpressure is an M5 concern |
 | **Batching** | Batch publish/deliver → reduces syscall/allocation overhead |
 | **Partition parallelism** | Partition count = unit of parallelism, scales with cores |
-| **Thread pool tuning** | Dedicated long-running consume loops + ThreadPool. Avoid excessive async context switching |
+| **Thread pool tuning** | Dedicated long-running read loops + ThreadPool. Avoid excessive async context switching |
 | **Object pooling / `ArrayPool`** | Buffer reuse to reduce GC pressure |
 | **Zero/low-copy** | Opaque payload → no deserialization, minimal copying |
 
-> **Backpressure** note: if production outpaces consumption, the queue grows unbounded → memory blowup
-> → OOM. Backpressure flows a "slow down!" signal back to the producer to keep the system stable
-> (like tightening a valve when a pipe over-fills).
+> **Backpressure** note: in a log model a slow consumer does not cause buildup the way a push buffer would —
+> it simply lags (lower offset) and the retained log lets it catch up. Backpressure matters mainly on the
+> *publish* side: if producers append faster than the system can sustain, M5 flows a "slow down!" signal back
+> to the producer (like tightening a valve when a pipe over-fills). This is distinct from the push model,
+> where a full per-subscriber buffer forces an immediate drop-or-block decision.
 
 ---
 
@@ -527,6 +573,57 @@ separate process in M5 (load). (Incident/decisions: 09 FIX-005 · DEC-007 · DEC
 
 ---
 
+## 11.65 Test design: deterministic vs probabilistic assertions, and flaky tests
+
+A lesson learned while adding the partition hash-distribution test (M2 zoom-out). It changed how I think
+about what a test should assert.
+
+### What a flaky test is
+A **flaky test** is one that passes or fails **without the code changing** — green today, red tomorrow, green
+again, all on the same commit. The key point: **the flakiness is usually caused by the test, not by a bug in
+the code.** The code is fine; the test is asserting the wrong thing.
+
+### Why flaky tests are damaging — they destroy CI trust
+A test suite is only useful if a red result *means something*. When a test is flaky, red stops meaning "there
+is a bug" and starts meaning "that flaky one again — just re-run it." Once people learn to ignore or re-run
+red, they ignore the **real** failures too, and the CI gate is effectively dead: PRs get merged past a
+suite no one believes. **A flaky test is worse than no test** — it adds noise and erodes the signal that the
+whole point of CI depends on. So a flaky test is not a "strict, demanding test"; it is a **broken** test.
+
+### The real rule: assert exactly the property the code guarantees
+The mistake that creates flakiness is asserting **more than the code actually promises**. The fix is not
+"loosen everything until it stops going red" — it is to match the assertion to the *kind* of property:
+
+- **Deterministic property → assert it tightly (exactly).** The code guarantees an exact outcome every time,
+  so the test should too. Loosening here would be a genuinely weak test.
+  - Examples in Flumewright: "same partition key → same partition" (`ForKey(k)` is pure → assert equality
+    exactly); "offsets are unique and contiguous under 1000 concurrent appends" (an invariant that must hold
+    every run → assert exactly, no tolerance). A tight bound is *correct* here.
+- **Probabilistic / statistical property → assert it as a generous range.** The code only promises a
+  *tendency*, not an exact number, so demanding an exact number turns normal statistical variation into a
+  failure — that is precisely how you manufacture a flaky test.
+  - Example: hash distribution. Hashing 1000 distinct keys over 4 partitions will **never** land exactly
+    250/250/250/250 — you get something like 248/251/263/238. That spread is the nature of statistics, not a
+    bug. If the test asserted "each partition 245–255", a healthy run producing 263 would fail → flaky, and it
+    would be **the test's fault**, not the code's. Asserting a **generous band** (each partition 150–350 for
+    1000 keys) is not "loose" — it is the *accurate* expression of what the hash actually guarantees:
+    "reasonably even, never all piled into one partition." It still catches the real failure mode (a broken
+    hash dumping 900 keys into one partition) while ignoring meaningless jitter.
+
+### The mental model
+Ask: **"What does the code actually guarantee?"** Assert that, no more, no less.
+- Guarantees an exact result → tight assertion (and a loose one would be a weakness).
+- Guarantees only a tendency → ranged assertion (and a tight one would be a flaky bug *in the test*).
+
+Avoiding flakiness is therefore not a goal in itself that you reach by "being lenient" — it is the natural
+result of asserting the property the code truly has. A medical analogy: testing for "normal body temperature"
+as *exactly* 36.5 °C would flag a perfectly healthy 36.7 as abnormal; the *accurate* test is a range
+(36–37.5). Temperature naturally varies; so does a hash distribution. (Flumewright examples: 09 FIX-008 — an
+integration test made robust with a bounded timeout instead of an unbounded wait — is the same idea on the
+timing axis: assert "arrives within a bound", not "arrives at an exact instant".)
+
+---
+
 ## 11.7 Dev environment: containers, Linux capabilities & Git file mode
 
 **Why this is here:** development moved into a VS Code **dev container** (09 DEC-009). Three concepts
@@ -633,4 +730,5 @@ Each concept is not an isolated feature but complements the trade-offs of the ot
 
 ## Related Documents
 
-- Execution Plan: `01-execution-plan.en.md`
+- Execution Plan: `docs/design/plan.md`
+- Decision & Fix Log: `docs/decisions/decision-and-fix-log.md`

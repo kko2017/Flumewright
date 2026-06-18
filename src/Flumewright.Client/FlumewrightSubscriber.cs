@@ -7,7 +7,7 @@ using System.Runtime.CompilerServices;
 namespace Flumewright.Client;
 
 public sealed record ReceivedMessage(
-    string Topic, long Offset,IReadOnlyDictionary<string,string> Headers, byte[] Payload);
+    string Topic, long Offset, IReadOnlyDictionary<string, string> Headers, byte[] Payload, int Partition);
 
 public sealed class FlumewrightSubscriber: IDisposable
 {
@@ -27,7 +27,7 @@ public sealed class FlumewrightSubscriber: IDisposable
         using var call = _client.Subscribe(new SubscribeRequest { Topic = topic }, cancellationToken: ct);
         await foreach (var d in call.ResponseStream.ReadAllAsync(ct))
         {
-            yield return new ReceivedMessage(d.Topic, d.Offset, new Dictionary<string,string>(d.Headers), d.Payload.ToByteArray());
+            yield return new ReceivedMessage(d.Topic, d.Offset, new Dictionary<string, string>(d.Headers), d.Payload.ToByteArray(), d.Partition);
         }
     }
 

@@ -19,6 +19,19 @@ public sealed class FlumewrightPublisher : IDisposable
     public async Task<long> PublishAsync(
         string topic,
         byte[] payload,
+        byte[]? partitionKey = null,
+        IReadOnlyDictionary<string, string>? headers = null,
+        string? clientMsgId = null,
+        CancellationToken ct = default)
+    {
+        var ack = await PublishAckAsync(topic, payload, partitionKey, headers, clientMsgId, ct);
+        return ack.Offset;
+    }
+
+    public async Task<PublishAck> PublishAckAsync(
+        string topic,
+        byte[] payload,
+        byte[]? partitionKey = null,
         IReadOnlyDictionary<string, string>? headers = null,
         string? clientMsgId = null,
         CancellationToken ct = default)
@@ -29,11 +42,19 @@ public sealed class FlumewrightPublisher : IDisposable
             Payload = ByteString.CopyFrom(payload),
             ClientMsgId = clientMsgId ?? Guid.NewGuid().ToString()
         };
+        if (partitionKey is not null)
+        {
+            envelope.PartitionKey = ByteString.CopyFrom(partitionKey);
+        }
         if (headers is not null)
-            foreach (var kv in headers) envelope.Headers[kv.Key] = kv.Value;
+        {
+            foreach (var kv in headers)
+            {
+                envelope.Headers[kv.Key] = kv.Value;
+            }
+        }
 
-        var ack = await _client.PublishAsync(envelope, cancellationToken: ct);
-        return ack.Offset;
+        return await _client.PublishAsync(envelope, cancellationToken: ct);
     }
 
     public void Dispose() => _channel.Dispose();
