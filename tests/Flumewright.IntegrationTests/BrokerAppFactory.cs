@@ -11,12 +11,14 @@ public sealed class BrokerAppFactory : IAsyncLifetime
 {
     private WebApplication? _app;
     public string Address { get; private set; } = "";
+    public Flumewright.Broker.Core.ITopicStore Store => _app!.Services.GetRequiredService<Flumewright.Broker.Core.ITopicStore>();
 
     public async Task InitializeAsync()
     {
         // Run the same bootstrap as Program.cs on port 0 -> OS allocates an empty port
         var builder = WebApplication.CreateBuilder();
         builder.Configuration["Broker:Port"] = "0";
+        builder.Configuration["Broker:PartitionsPerTopic"] = "4";
 
         builder.WebHost.ConfigureKestrel(options =>
         {
