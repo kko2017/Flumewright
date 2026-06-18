@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -53,23 +54,27 @@ public class InMemoryTopicStoreTests
 
     [Fact]
     [Trait("Category", "Unit")]
-    public async Task Subscribe_LatestSemantics_DropsOldMessages()
+    public async Task Subscribe_LatestSemantics_StartsFromEnd()
     {
         var store = new InMemoryTopicStore(1, 10000);
         var headers = new Dictionary<string, string>();
         var payload = ReadOnlyMemory<byte>.Empty;
 
+        // Publish offset 0
         await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
 
         using var cts = new CancellationTokenSource();
+        // Subscribe with default (starts from end)
         var enumerator = store.SubscribeAsync("topic1", cts.Token).GetAsyncEnumerator(cts.Token);
         var pendingRead = enumerator.MoveNextAsync().AsTask();
 
+        // Publish offset 1
         await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
 
         var hasNext = await pendingRead;
         hasNext.Should().BeTrue();
         
+        // Reader should see offset 1, not 0
         enumerator.Current.Offset.Should().Be(1);
     }
 
@@ -113,7 +118,7 @@ public class InMemoryTopicStoreTests
 
     [Fact]
     [Trait("Category", "Unit")]
-    public async Task Offsets_AreUniqueUnderConcurrentPublishes()
+    public async Task Offsets_AreUniqueAndContiguousUnderConcurrentPublishes()
     {
         var store = new InMemoryTopicStore(1, 10000);
         int count = 1000;
@@ -297,55 +302,48 @@ public class InMemoryTopicStoreTests
 
     [Fact]
     [Trait("Category", "Unit")]
-    public async Task SlowSubscriber_DropsMessages_WhenChannelIsFull()
+    public async Task ReadPartition_ReturnsRecordsInAppendOrder()
     {
-        var store = new InMemoryTopicStore(1, 2);
+        var store = new InMemoryTopicStore(1, 10000);
         var headers = new Dictionary<string, string>();
-        var payload = ReadOnlyMemory<byte>.Empty;
+        var payload1 = new byte[] { 10 }.AsMemory();
+        var payload2 = new byte[] { 20 }.AsMemory();
+
+        await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload1);
+        await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload2);
+
         using var cts = new CancellationTokenSource();
+        var enumerator = store.ReadPartitionAsync("topic1", 0, 0, cts.Token).GetAsyncEnumerator(cts.Token);
 
-        var enumerator = store.SubscribeAsync("topic_slow", cts.Token).GetAsyncEnumerator(cts.Token);
-        var pendingRead = enumerator.MoveNextAsync().AsTask();
-
-        // Message 0 will be read immediately by pendingRead
-        var res0 = await store.PublishAsync("topic_slow", ReadOnlyMemory<byte>.Empty, headers, payload);
-        
-        // Wait until the reader has consumed Message 0 and yielded it.
-        // This ensures the channel is empty and the subscriber is suspended (not active).
-        (await pendingRead).Should().BeTrue();
+        (await enumerator.MoveNextAsync()).Should().BeTrue();
         enumerator.Current.Offset.Should().Be(0);
+        enumerator.Current.Payload.ToArray()[0].Should().Be(10);
 
-        // Publish Message 1 and 2. They will fit in the bounded channel (capacity 2).
-        var res1 = await store.PublishAsync("topic_slow", ReadOnlyMemory<byte>.Empty, headers, payload);
-        var res2 = await store.PublishAsync("topic_slow", ReadOnlyMemory<byte>.Empty, headers, payload);
-        
-        // Message 3 should be dropped because the channel is full (contains Message 1 and 2).
-        var res3 = await store.PublishAsync("topic_slow", ReadOnlyMemory<byte>.Empty, headers, payload);
-
-        res0.Offset.Should().Be(0);
-        res1.Offset.Should().Be(1);
-        res2.Offset.Should().Be(2);
-        res3.Offset.Should().Be(3);
-
-        store.GetDroppedCount("topic_slow", 0).Should().Be(1);
-
-        // Verify we receive Message 1 and 2.
         (await enumerator.MoveNextAsync()).Should().BeTrue();
         enumerator.Current.Offset.Should().Be(1);
+        enumerator.Current.Payload.ToArray()[0].Should().Be(20);
+    }
 
-        (await enumerator.MoveNextAsync()).Should().BeTrue();
-        enumerator.Current.Offset.Should().Be(2);
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task Reader_StartingAtZero_SeesRetainedEarlierRecords()
+    {
+        var store = new InMemoryTopicStore(1, 10000);
+        var headers = new Dictionary<string, string>();
+        var payload1 = new byte[] { 100 }.AsMemory();
 
-        var moveNextTask = enumerator.MoveNextAsync().AsTask();
-        var delayTask = Task.Delay(100);
-        var completedTask = await Task.WhenAny(moveNextTask, delayTask);
-        completedTask.Should().Be(delayTask, "No more messages should be available because the fourth was dropped");
+        // Publish before subscribing
+        await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload1);
 
-        cts.Cancel();
-        try
-        {
-            await moveNextTask;
-        }
-        catch (OperationCanceledException) { }
+        using var cts = new CancellationTokenSource();
+        // Subscribe from offset 0
+        var enumerator = store.SubscribeAsync("topic1", 0, cts.Token).GetAsyncEnumerator(cts.Token);
+        var pendingRead = enumerator.MoveNextAsync().AsTask();
+
+        var hasNext = await pendingRead;
+        hasNext.Should().BeTrue();
+        
+        enumerator.Current.Offset.Should().Be(0);
+        enumerator.Current.Payload.ToArray()[0].Should().Be(100);
     }
 }
