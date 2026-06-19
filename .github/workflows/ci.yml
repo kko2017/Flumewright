@@ -83,7 +83,6 @@ jobs:
           dotnet publish src/Flumewright.Broker
           --configuration Release
           --output ./publish/broker
-          --no-build
 
       - name: Upload dev artifact
         uses: actions/upload-artifact@v4
