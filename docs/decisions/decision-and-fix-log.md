@@ -631,3 +631,36 @@
   validated at the store level for now), unary publish (M5). All already tracked; no new deferral introduced.
 - **Disposition:** fixes A and B approved and committed on `feat/m2-partitioning`. Next: docs sync (study-notes
   §11.65 + this entry), then user merges M2 to main via a merge commit. **No tag** (v0.1.0 = Phase 1 / M6).
+
+## FIX-010 — Empty `catch (Exception)` in SubscribeAsync silently swallowed partition-reader faults
+- **Milestone/Step:** found during the CI/CD hardening interval (after M2 merge), by the newly
+  introduced **SonarCloud** analysis (rules S2486 "handle the exception" / S108 "empty block").
+- **Type:** `[correctness/quality]` — caught by static analysis, NOT by tests or human review.
+- **What:** `InMemoryTopicStore.SubscribeAsync` spawns one background `Task.Run` per partition that
+  reads the log and writes into the fan-in channel. That task body had two empty catches:
+  `catch (OperationCanceledException) { }` (legitimate — cancellation is normal shutdown) **and**
+  `catch (Exception) { }`. The second one swallowed **every** exception: if a partition reader faulted
+  (e.g. a real bug threw mid-read), the exception vanished, that reader died silently, and the
+  subscriber simply never saw those partition's messages — with no error, no log, nothing to trace.
+- **Significance:** this directly contradicts the project's "don't hide bugs / a green run is a
+  starting point, not a conclusion" principle. It is also notable that **M2's checkpoint reviews and
+  the end-of-milestone zoom-out (DEC-018) both missed it** — it took a static analyzer to surface it.
+  First concrete payoff of adopting SonarCloud: it caught a real quality defect that human review and a
+  passing 25-test suite had not.
+- **Resolution (branch `fix/subscribe-swallowed-exceptions`):**
+  - Removed the `catch (Exception) { }` entirely — general exceptions now propagate out of the task.
+  - Kept `catch (OperationCanceledException)` (with a clarifying comment) so cancellation stays a clean
+    shutdown and is never surfaced as an error.
+  - Changed the completion continuation from `.ContinueWith(_ => channel.Writer.TryComplete())` to
+    `.ContinueWith(t => channel.Writer.TryComplete(t.Exception), ...)` so a faulted reader completes the
+    channel **with** its exception, which the subscriber's read loop then observes.
+  - Added `Subscribe_FaultedReader_PropagatesExceptionToSubscriber` (injects a fault via reflection and
+    asserts the subscriber observes the exception). The existing cancellation test still passes —
+    cancellation remains a clean shutdown, confirming the three paths (normal / cancel / fault) now
+    behave distinctly. Verified at a checkpoint (concurrency = high-risk): 28 tests pass.
+- **Lesson:** static analysis and human review are complementary, not redundant. The checkpoint model
+  (DEC-013) catches concurrency/semantic bugs a human can reason about (FIX-009); a static analyzer
+  catches mechanical hazards a human skims past (an empty catch). Both are worth having.
+- **Note:** the new test injects the fault via reflection on private members, so it is coupled to
+  internal names and may need updating if `Partition`/`_messages` are renamed — an accepted trade-off
+  given there is no clean public seam to inject a reader fault.
