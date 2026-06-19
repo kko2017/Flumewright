@@ -65,7 +65,7 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          dotnet sonarscanner begin /k:"<PROJECT_KEY>" /o:"<ORG_KEY>" /d:sonar.token="$SONAR_TOKEN" /d:sonar.host.url="https://sonarcloud.io" /d:sonar.cs.opencover.reportsPaths="**/TestResults/**/coverage.opencover.xml" /d:sonar.cs.vstest.reportsPaths="**/TestResults/*.trx"
+          dotnet sonarscanner begin /k:"FFXD_kko2017_Flumewright_1928394" /o:"alex-oh-sonar81823" /d:sonar.token="$SONAR_TOKEN" /d:sonar.host.url="https://sonarcloud.io" /d:sonar.cs.opencover.reportsPaths="**/TestResults/**/coverage.opencover.xml" /d:sonar.cs.vstest.reportsPaths="**/TestResults/*.trx"
           dotnet build --no-incremental -c Release
           dotnet test -c Release --filter "Category!=Load" --collect:"XPlat Code Coverage" --logger "trx;LogFileName=test-results.trx" --results-directory TestResults -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
           dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
