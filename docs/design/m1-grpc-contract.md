@@ -10,6 +10,8 @@ At the core of the broker sits a pure, in-memory topic store that provides basic
 
 To guarantee that the plumbing works across network layers, we introduced a realistic integration test that hosts a real Kestrel port and verifies one message successfully traversing the publisher-to-subscriber path. Sample console applications were also wired up to manually demonstrate this behavior.
 
+> **Superseded in M2:** M1's per-subscriber **channel** store was a push-model implementation. It was replaced by a per-partition **append-only log** with offset-based (pull) consumption in M2 — see DEC-015 and the [M2 design note](m2-partitioning.md). This note records M1 as it was built; the channel store no longer exists in the codebase.
+
 ## Deliberately deferred
 
 M1 is intentionally minimal. To preserve simplicity, several features are explicitly out of scope for the current design and must not be assumed present. Partitioning and partition keys are deferred to M2. Operational capabilities like consumer groups, message acknowledgements, in-flight message tracking, and dead-letter queues belong to M3, along with the Acknowledge and Admin RPCs. Transport layer security via mTLS and certificates will be introduced in M4. Advanced performance features such as streaming publish, request batching, memory backpressure, and the 100K throughput target are slated for M5. Finally, structured logging using Serilog and observable metrics are deferred to M6.
