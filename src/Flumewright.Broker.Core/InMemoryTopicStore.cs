@@ -191,16 +191,14 @@ public sealed class InMemoryTopicStore : ITopicStore
                 }
                 catch (OperationCanceledException)
                 {
-                }
-                catch (Exception)
-                {
+                    // Cancellation is normal shutdown behavior for this partition reader task.
                 }
             }, CancellationToken.None);
 
             partitionTasks.Add(task);
         }
 
-        _ = Task.WhenAll(partitionTasks).ContinueWith(_ => channel.Writer.TryComplete(), TaskScheduler.Default);
+        _ = Task.WhenAll(partitionTasks).ContinueWith(t => channel.Writer.TryComplete(t.Exception), TaskScheduler.Default);
 
         while (await channel.Reader.WaitToReadAsync(ct))
         {

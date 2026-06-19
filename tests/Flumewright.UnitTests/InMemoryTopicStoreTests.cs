@@ -346,4 +346,56 @@ public class InMemoryTopicStoreTests
         enumerator.Current.Offset.Should().Be(0);
         enumerator.Current.Payload.ToArray()[0].Should().Be(100);
     }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task Subscribe_FaultedReader_PropagatesExceptionToSubscriber()
+    {
+        // Arrange
+        var store = new InMemoryTopicStore(1);
+        
+        // Use reflection to inject a null messages list in the Partition object
+        // so that it throws a NullReferenceException when ReadFromOffsetAsync is evaluated.
+        var topicType = typeof(InMemoryTopicStore).GetNestedType("Topic", System.Reflection.BindingFlags.NonPublic);
+        var partitionType = typeof(InMemoryTopicStore).GetNestedType("Partition", System.Reflection.BindingFlags.NonPublic);
+        
+        Assert.NotNull(topicType);
+        Assert.NotNull(partitionType);
+        
+        var topicInstance = Activator.CreateInstance(topicType, 1);
+        var partitionsField = topicType.GetProperty("Partitions", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+        Assert.NotNull(partitionsField);
+        var partitionsArray = (Array)partitionsField.GetValue(topicInstance)!;
+        var partitionInstance = partitionsArray.GetValue(0);
+        
+        var messagesField = partitionType.GetField("_messages", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        Assert.NotNull(messagesField);
+        messagesField.SetValue(partitionInstance, null);
+        
+        var topicsField = typeof(InMemoryTopicStore).GetField("_topics", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        Assert.NotNull(topicsField);
+        var topicsDict = (System.Collections.IDictionary)topicsField.GetValue(store)!;
+        Assert.NotNull(topicsDict);
+        topicsDict.Add("faulted-topic", topicInstance);
+
+        using var cts = new CancellationTokenSource();
+        
+        // Act & Assert
+        // The exception should propagate and be thrown during MoveNextAsync on the subscriber.
+        var enumerator = store.SubscribeAsync("faulted-topic", 0, cts.Token).GetAsyncEnumerator(cts.Token);
+        
+        Func<Task> act = async () =>
+        {
+            await enumerator.MoveNextAsync();
+        };
+
+        // Channel.Reader.WaitToReadAsync throws the exception passed to TryComplete.
+        // Since Task.WhenAll wraps the exception in an AggregateException, it might be an AggregateException.
+        var exception = await act.Should().ThrowAsync<Exception>();
+        var ex = exception.And;
+        bool isExpected = ex is NullReferenceException || 
+            (ex is AggregateException agg && agg.InnerExceptions.Any(ie => ie is NullReferenceException));
+            
+        isExpected.Should().BeTrue();
+    }
 }
