@@ -12,10 +12,10 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2
         with:
           dotnet-version: '8.0.x'
 
@@ -40,7 +40,7 @@ jobs:
           tar -czf dist/flumewright-broker-${{ github.ref_name }}-linux-x64.tar.gz -C ./publish/broker .
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@7c4723f7a335432393329f8f1c564994ce50185d
         with:
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}

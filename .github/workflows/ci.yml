@@ -15,6 +15,7 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
+<<<<<<< Updated upstream
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
@@ -24,9 +25,12 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
+=======
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+>>>>>>> Stashed changes
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2
         with:
           dotnet-version: '8.0.x'
 
@@ -46,7 +50,7 @@ jobs:
           restore-keys: ${{ runner.os }}-sonar-scanner
 
       - name: Cache NuGet packages
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: ~/.nuget/packages
           key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
@@ -71,7 +75,7 @@ jobs:
           dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN"
 
       - name: Publish test results
-        uses: dorny/test-reporter@v1
+        uses: dorny/test-reporter@3eeb9fc888e82e8be2fb356bbeec2750231672bc
         if: always()
         with:
           name: 'Test Results'
@@ -85,7 +89,7 @@ jobs:
           --output ./publish/broker
 
       - name: Upload dev artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: flumewright-broker-dev-${{ github.sha }}
           path: ./publish/broker
