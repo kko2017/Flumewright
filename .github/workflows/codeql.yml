@@ -18,15 +18,15 @@ jobs:
       actions: read
     steps:
       - name: Checkout
-        uses: actions/checkout@<CHECKOUT_SHA>   # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@<CODEQL_SHA>   # v4
+        uses: github/codeql-action/init@411bbbe57033eedfc1a82d68c01345aa96c737d7
         with:
           languages: csharp
           build-mode: autobuild
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@<CODEQL_SHA>   # v4
+        uses: github/codeql-action/analyze@411bbbe57033eedfc1a82d68c01345aa96c737d7
         with:
           category: "/language:csharp"
