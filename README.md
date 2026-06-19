@@ -7,6 +7,12 @@
 ![gRPC](https://img.shields.io/badge/gRPC-2496ED?logo=grpc&logoColor=white)
 ![Protobuf](https://img.shields.io/badge/Protobuf-EA4C89?logo=protobuf&logoColor=white)
 
+[![CI](https://github.com/kko2017/Flumewright/actions/workflows/ci.yml/badge.svg)](https://github.com/kko2017/Flumewright/actions/workflows/ci.yml)
+[![Quality Gate](https://sonarcloud.io/api/project_badges/quality_gate?project=FFXD_kko2017_Flumewright_1928394)](https://sonarcloud.io/summary/new_code?id=FFXD_kko2017_Flumewright_1928394)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=FFXD_kko2017_Flumewright_1928394&metric=coverage)](https://sonarcloud.io/summary/new_code?id=FFXD_kko2017_Flumewright_1928394)
+[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=FFXD_kko2017_Flumewright_1928394&metric=bugs)](https://sonarcloud.io/summary/new_code?id=FFXD_kko2017_Flumewright_1928394)
+[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=FFXD_kko2017_Flumewright_1928394&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=FFXD_kko2017_Flumewright_1928394)
+
 Flumewright is a high-throughput message bus where a standalone **Broker** process mediates
 communication between **Publisher** and **Subscriber** processes over gRPC, following the
 publish-subscribe pattern. It is built on a **Kafka-style log model**: publish appends to a
@@ -89,7 +95,7 @@ See [docs/design/plan.md](docs/design/plan.md) for the full design.
 
 ### Build & Test
 ```bash
-git clone https://github.com/<USERNAME>/Flumewright.git
+git clone https://github.com/kko2017/Flumewright.git
 cd Flumewright
 
 dotnet restore
@@ -172,7 +178,7 @@ See [docs/guides/version-control-and-validation-guide.md](docs/guides/version-co
 
 ## 📦 Releases / Downloads
 
-- **Stable releases**: download per-version artifacts from the [Releases](https://github.com/<USERNAME>/Flumewright/releases) tab
+- **Stable releases**: download per-version artifacts from the [Releases](https://github.com/kko2017/Flumewright/releases) tab
 - **Development builds**: Actions tab → latest CI run → download from Artifacts
 
 ---
