@@ -26,6 +26,7 @@ instruction docs (04/05/07/NN-phaseX-*) are personal and NEVER committed.
 | 03-version-control-guide.en.md | docs/guides/version-control-and-validation-guide.md |
 | 09-decision-and-fix-log.en.md | docs/decisions/decision-and-fix-log.md |
 | ai-collaboration.en.md | docs/ai-collaboration.md |
+| 06-README.en.md | README.md (repo root — the only target outside docs/) |
 
 (Milestone design notes like `docs/design/mN-*.md` are written directly in `docs/`, not synced from a root
 source — leave them alone unless explicitly editing them.)
@@ -40,7 +41,8 @@ for pair in \
   "02-study-notes.en.md:docs/learning/study-notes.md" \
   "03-version-control-guide.en.md:docs/guides/version-control-and-validation-guide.md" \
   "09-decision-and-fix-log.en.md:docs/decisions/decision-and-fix-log.md" \
-  "ai-collaboration.en.md:docs/ai-collaboration.md"; do
+  "ai-collaboration.en.md:docs/ai-collaboration.md" \
+  "06-README.en.md:README.md"; do
   src="${pair%%:*}"; dst="${pair##*:}"
   if [ -f "$src" ] && ! diff -q "$src" "$dst" >/dev/null 2>&1; then
     echo "DRIFT: $src -> $dst"
@@ -65,11 +67,12 @@ Pick markers from the actual change (e.g. a new section heading, a new DEC/FIX i
 A copy that "ran" but left stale content is the exact failure this skill guards against.
 
 ### 4. Commit (only if every check passed)
-- Stage ONLY the synced docs/ paths with explicit per-file `git add <path>`. NEVER `git add .` / `-A`.
+- Stage ONLY the synced target paths with explicit per-file `git add <path>`. NEVER `git add .` / `-A`.
+  (Targets are the `docs/` paths above, plus the root `README.md` for the 06 mapping.)
 - Single commit, Conventional Commits:
   `docs(sync): <short summary of what changed and why>`
 - After committing, run `git show --stat HEAD` and show the output. It MUST list exactly the synced
-  docs/ files and nothing else (no code, no unrelated docs).
+  target files and nothing else (no code, no unrelated docs).
 - The pre-commit hook (build + fast unit tests) must pass. If it fails, STOP and report — do not work around it.
 
 ## Hard rules (inherited from the project — see docs/guides/version-control-and-validation-guide.md)
