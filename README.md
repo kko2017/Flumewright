@@ -21,7 +21,7 @@ per-partition append-only log, and subscribers consume by pulling at their own o
 > **Status:** Phase 1 in progress. M1 (gRPC contract + broker host + pub→sub) and M2
 > (partitioning + append-only log + offset-based consumption) are complete. Transport security
 > (mTLS), consumer groups, offset-commit acks, and 100K-scale streaming are upcoming milestones —
-> see [Roadmap](#-roadmap). Features below are marked ✅ done or 🔜 planned accordingly.
+> see [Roadmap](#%EF%B8%8F-roadmap). Features below are marked ✅ done or 🔜 planned accordingly.
 
 ---
 
