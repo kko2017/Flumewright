@@ -7,3 +7,6 @@ end_of_line = lf
 charset = utf-8
 trim_trailing_whitespace = true
 insert_final_newline = true
+
+# Exception-swallowing prevention (FIX-010 class)
+dotnet_diagnostic.CA1031.severity = error
