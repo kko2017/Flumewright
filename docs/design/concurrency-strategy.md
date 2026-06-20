@@ -130,9 +130,9 @@ the concurrency passages.
 
 - **Concepts & theory** — study notes:
   - TCS / lost wakeup, lock scope, atomic offsets → [study-notes](../learning/study-notes.md)
-  - flaky tests, deterministic vs probabilistic assertions → [study-notes §11.65](../learning/study-notes.md)
-  - static analysis vs human review (why both) → [study-notes §11.8](../learning/study-notes.md)
-- **Incidents** — the bugs and their fixes → [decision-and-fix-log](../decisions/decision-and-fix-log.md) (FIX-008, FIX-009, FIX-010)
+  - flaky tests, deterministic vs probabilistic assertions → [study-notes §11.65](../learning/study-notes.md#1165-test-design-deterministic-vs-probabilistic-assertions-and-flaky-tests-)
+  - static analysis vs human review (why both) → [study-notes §11.8](../learning/study-notes.md#118-cicd--quality-gates)
+- **Incidents** — the bugs and their fixes → [FIX-008](../decisions/decision-and-fix-log.md#fix-008--integration-test-could-hang-instead-of-failing-on-timeout-), [FIX-009](../decisions/decision-and-fix-log.md#fix-009--checkpoint-a-caught-a-latest-semantics-bug-in-the-channel-store-became-the-trigger-for-dec-015-), [FIX-010](../decisions/decision-and-fix-log.md#fix-010--empty-catch-exception-in-subscribeasync-silently-swallowed-partition-reader-faults-)
 - **CI integration** — how the analyzer/Coyote gates run in the pipeline → [CI/CD & quality gates](../guides/ci-cd-and-quality-gates.md)
 - **Design** — the log/pull model that the concurrency design rests on → [M2 partition log model](m2-partitioning.md), [plan](plan.md)
 - **Decisions** — DEC-013 (checkpoints), DEC-015 (log model), and the reviewer sub-agent → [decision-and-fix-log](../decisions/decision-and-fix-log.md)
