@@ -9,6 +9,47 @@
 
 ---
 
+## Contents
+
+### Decisions (DEC)
+- [DEC-001 — M1 Publish is unary (streaming deferred to M5)](#dec-001-m1-publish-is-unary-streaming-deferred-to-m5)
+- [DEC-002 — Ack/Admin RPCs deferred to M3](#dec-002-ackadmin-rpcs-deferred-to-m3)
+- [DEC-003 — `global.json` rollForward = latestFeature (not latestMinor)](#dec-003-globaljson-rollforward-latestfeature-not-latestminor)
+- [DEC-004 — `.gitignore` must block certs/keys and logs](#dec-004-gitignore-must-block-certskeys-and-logs)
+- [DEC-005 — Dependency Injection via the built-in container, depend on interfaces](#dec-005-dependency-injection-via-the-built-in-container-depend-on-interfaces)
+- [DEC-006 — Disposal roadmap (IDisposable / IAsyncDisposable)](#dec-006-disposal-roadmap-idisposable-iasyncdisposable)
+- [DEC-007 — M1 integration test is in-process (real-port Kestrel)](#dec-007-m1-integration-test-is-in-process-real-port-kestrel)
+- [DEC-008 — Http2UnencryptedSupport switch unnecessary for plaintext h2c (.NET 8)](#dec-008-http2unencryptedsupport-switch-unnecessary-for-plaintext-h2c-net-8)
+- [DEC-009 — Development moved into a VS Code dev container (Linux)](#dec-009-development-moved-into-a-vs-code-dev-container-linux)
+- [DEC-010 — Bind-mount UID mismatch breaks `obj/` writes (build) and `chmod` (hooks)](#dec-010-bind-mount-uid-mismatch-breaks-obj-writes-build-and-chmod-hooks)
+- [DEC-011 — M1 end-of-milestone zoom-out review: outcome & dispositions](#dec-011-m1-end-of-milestone-zoom-out-review-outcome-dispositions)
+- [DEC-012 — main branch protection enabled via GitHub ruleset](#dec-012-main-branch-protection-enabled-via-github-ruleset)
+- [DEC-013 — Risk-based checkpoint verification (replaces per-step hand verification)](#dec-013-risk-based-checkpoint-verification-replaces-per-step-hand-verification)
+- [DEC-014 — Agent harness: standing rules (GEMINI.md) + workspace skills, replacing per-prompt @-attachments](#dec-014-agent-harness-standing-rules-geminimd-workspace-skills-replacing-per-prompt-attachments)
+- [DEC-015 — Delivery model confirmed: log/pull (Kafka-style), not push; M2 redefined](#dec-015-delivery-model-confirmed-logpull-kafka-style-not-push-m2-redefined)
+- [DEC-016 — Tool Permission: strict → always-proceed (control re-placed, not relaxed)](#dec-016-tool-permission-strict-always-proceed-control-re-placed-not-relaxed)
+- [DEC-017 — Planned CI/CD quality-gate hardening (reserved; execute after M2)](#dec-017-planned-cicd-quality-gate-hardening-reserved-execute-after-m2)
+- [DEC-018 — M2 end-of-milestone zoom-out review: outcome & dispositions](#dec-018-m2-end-of-milestone-zoom-out-review-outcome-dispositions)
+- [DEC-019 — CI/CD quality-gate hardening: executed (soft stage complete; hard pending)](#dec-019-cicd-quality-gate-hardening-executed-soft-stage-complete-hard-pending)
+- [DEC-020 — Reviewer sub-agents: function-based and on-call, not domain-based and standing 🔒](#dec-020-reviewer-sub-agents-function-based-and-on-call-not-domain-based-and-standing)
+- [DEC-021 — Strengthen Roslyn analyzers to block FIX-010-class defects at build time 🔒](#dec-021-strengthen-roslyn-analyzers-to-block-fix-010-class-defects-at-build-time)
+- [DEC-022 — A dedicated Concurrency Strategy doc (11), 🔒 cross-reference markers, and a reminder rule 🔒](#dec-022-a-dedicated-concurrency-strategy-doc-11-cross-reference-markers-and-a-reminder-rule)
+
+### Fixes (FIX)
+- [FIX-001 — Fan-out broken: a shared per-topic channel delivered to only one subscriber](#fix-001-fan-out-broken-a-shared-per-topic-channel-delivered-to-only-one-subscriber)
+- [FIX-002 — Publisher cancellation token misused on subscriber writes; blocking fan-out](#fix-002-publisher-cancellation-token-misused-on-subscriber-writes-blocking-fan-out)
+- [FIX-003 — Subscriber channel not completed on unsubscribe](#fix-003-subscriber-channel-not-completed-on-unsubscribe)
+- [FIX-004 — Line-ending normalization (.gitattributes) missing](#fix-004-line-ending-normalization-gitattributes-missing)
+- [FIX-005 — Integration-test host: WebApplicationFactory incompatible with a real Kestrel host](#fix-005-integration-test-host-webapplicationfactory-incompatible-with-a-real-kestrel-host)
+- [FIX-006 — CLI's broad `git add` staged unrelated changes into the wrong commits](#fix-006-clis-broad-git-add-staged-unrelated-changes-into-the-wrong-commits)
+- [FIX-007 — pre-commit hook tracked as 100644: the local validation gate may never have run](#fix-007-pre-commit-hook-tracked-as-100644-the-local-validation-gate-may-never-have-run)
+- [FIX-008 — Integration test could hang instead of failing on timeout 🔒](#fix-008-integration-test-could-hang-instead-of-failing-on-timeout)
+- [FIX-009 — Checkpoint A caught a LATEST-semantics bug in the channel store (became the trigger for DEC-015) 🔒](#fix-009-checkpoint-a-caught-a-latest-semantics-bug-in-the-channel-store-became-the-trigger-for-dec-015)
+- [FIX-010 — Empty `catch (Exception)` in SubscribeAsync silently swallowed partition-reader faults 🔒](#fix-010-empty-catch-exception-in-subscribeasync-silently-swallowed-partition-reader-faults)
+
+---
+
+
 ## FIX-001 — Fan-out broken: a shared per-topic channel delivered to only one subscriber
 - **Milestone/Step:** M1 / Step 2 → fixed in Step 2.1
 - **Severity:** real bug (latent — passed tests with a single subscriber)
@@ -702,3 +743,73 @@
   (csharp)` already forces CodeQL to run, and code-scanning alerts are 0 at this stage. Promote `Code scanning
   results` to a required check around **M4** (when mTLS enlarges the security surface), after checking the
   severity threshold in Settings → Code security.
+
+## DEC-020 — Reviewer sub-agents: function-based and on-call, not domain-based and standing 🔒
+- **Decision:** Add isolated **reviewer** sub-agents that *verify*, separate from the main agent that
+  *authors*: `code-review` (runs at every checkpoint and inside `zoomout-review`, over the diff) and
+  `doc-review` (on-demand, over the English canonical docs). Both are **report-only**; fixes stay with the
+  main agent + human.
+- **Trigger / context:** FIX-010 (a swallowed exception) passed the checkpoint self-review *and* the
+  end-of-milestone zoom-out, and was caught only by static analysis. The lesson is not "add more reviewers"
+  but "separate verification from authoring, and add mechanical detection". As M3 makes the code more
+  concurrent (offset-commit races, consumer-group rebalance), self-review bias gets more dangerous.
+- **Why function-based + on-call, NOT domain-based + standing.** A proposal to run standing per-domain
+  agents (a "partition agent", a "consumer-group agent", a "code-quality agent", etc.) was considered and
+  **rejected** for this project:
+  - **Token cost.** Each sub-agent loads its own context; several standing agents per task multiply tokens
+    3–5× — untenable under the < $60/month budget.
+  - **Boundaries don't match the code.** One M3 feature (offset commit) spans partition + consumer-group +
+    routing at once; domain-split agents would hand off across those seams and lose coherence. At ~17 files
+    the split costs more than it saves.
+  - **Standing = overhead when idle.** A "consumer-group agent" works only in M3 and sits idle in M4;
+    defining it permanently adds confusion, not value.
+  - **Control dilution.** Our model is human verification at checkpoints (DEC-013); five parallel authoring
+    agents would blur who stops where and who verifies what.
+  - **The real fix is detection + separation, not more authors.** FIX-010-class bugs are best caught by
+    *tools* (analyzers, Coyote) and by an *isolated reviewer*, not by more agents writing code.
+- **Relay rule (anti-bias):** at a checkpoint the main agent runs `code-review` before its own self-report
+  and relays the reviewer's findings **verbatim** + its own per-finding opinion, surfacing every
+  disagreement to the human. The main agent may not summarize away or silently overrule a reviewer concern —
+  a divergence between the two is exactly what the human should inspect.
+- **Cost guardrails:** reviewer gets the diff (+ relevant files) only, runs once per checkpoint, no
+  back-and-forth; `doc-review` runs only when the user asks.
+- **Each finding tagged:** [fix] / [suppress + reason] / [human judgment]; when unsure → human judgment,
+  never silently waved through.
+
+## DEC-021 — Strengthen Roslyn analyzers to block FIX-010-class defects at build time 🔒
+- **Decision:** Turn the swallowed-exception class of bug into a **build failure**, staged to avoid flooding
+  existing code:
+  - **Step 1 (done):** `EnableNETAnalyzers=true` + `CA1031` (do not catch general `Exception`) = **error**,
+    globally. Combined with the existing `TreatWarningsAsErrors`, a broad `catch (Exception)` now fails the
+    build. Production had **zero** hits (FIX-010 had already removed them); two legitimate test sites
+    (background-task exceptions marshaled to the test thread via `TrySetException`) got a scoped
+    `#pragma warning disable CA1031` + reason — NOT a whole-test-project exemption, which would let future
+    genuinely-swallowing test catches through.
+  - **Step 2 (planned, ~M3 start):** Microsoft.VisualStudio.Threading analyzers (VSTHRD) — unawaited `Task`
+    / `async void` — staged like CA1031 (targeted, report hits, fix or annotate).
+  - **Step 3 (planned, later):** raise `AnalysisMode` gradually and clear the resulting warnings (the
+    analyzer version of soft→hard rollout).
+- **Rationale:** CA1031 is not "general catch is forbidden" — a boundary handler that logs and recovers is
+  legitimate. Its value is forcing a *conscious justification* of every broad catch (annotate + reason), so
+  an unconscious empty catch (FIX-010) cannot reappear unnoticed. Mechanical, build-time, complexity-proof —
+  the layer a human review skims past.
+
+## DEC-022 — A dedicated Concurrency Strategy doc (11), 🔒 cross-reference markers, and a reminder rule 🔒
+- **Decision:** Concurrency is the core challenge of a message bus, so give it a first-class, numbered
+  document (`11` → `docs/design/concurrency-strategy.md`, en canonical + ko personal, in the docs-sync
+  mapping, linked from both READMEs) instead of leaving the material scattered.
+- **Structure:** concurrency vs parallelism; the hazards; **defense in depth — five layers** (code patterns
+  → checkpoints + reviewer sub-agent → static analysis [Roslyn CA1031 / SonarCloud / CodeQL] → concurrency
+  tests → Coyote, planned) with a tooling+status table; track record (FIX-009 caught by human review,
+  FIX-010 by static analysis — *different* layers); a links hub.
+- **Avoid duplication by reference, not copy-paste.** Doc 11 is the hub/router; depth stays in 02/09/ci-cd,
+  reached via anchored links. Concurrency passages across docs are tagged **`🔒`** so a reader can search
+  any doc and jump to them (02 §11.65 + the concurrency-testing ladder; 09 FIX-008/009/010; ci-cd §2).
+- **Reminder rule, not automation.** A proposal to auto-update doc 11 (and auto-docs-sync) whenever a
+  concurrency fix is logged was **rejected**: it would bloat 11's curated five-layer narrative into a
+  changelog, the "is-it-concurrency" classification is fuzzy, and auto-sync would bypass the
+  verify-before-commit safeguard. Instead, a GEMINI.md rule: when a 🔒 fix is logged, **flag to the human
+  whether 11 needs updating** — curation stays human; detection-automation is already covered by the
+  reviewer and the analyzers.
+- **Marker hygiene note:** the study-notes section markers were changed from a personal `⭐ Interview-ready`
+  label to a neutral **⭐ Key concept** — the previous wording was not appropriate for a public repo doc.
