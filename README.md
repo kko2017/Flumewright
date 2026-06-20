@@ -8,10 +8,10 @@
 ![Protobuf](https://img.shields.io/badge/Protobuf-EA4C89?logo=protobuf&logoColor=white)
 
 [![CI](https://github.com/kko2017/Flumewright/actions/workflows/ci.yml/badge.svg)](https://github.com/kko2017/Flumewright/actions/workflows/ci.yml)
-[![Quality Gate](https://sonarcloud.io/api/project_badges/quality_gate?project=FFXD_kko2017_Flumewright_1928394)](https://sonarcloud.io/summary/new_code?id=FFXD_kko2017_Flumewright_1928394)
 [![Coverage](https://sonarcloud.io/api/project_badges/measure?project=FFXD_kko2017_Flumewright_1928394&metric=coverage)](https://sonarcloud.io/summary/new_code?id=FFXD_kko2017_Flumewright_1928394)
 [![Bugs](https://sonarcloud.io/api/project_badges/measure?project=FFXD_kko2017_Flumewright_1928394&metric=bugs)](https://sonarcloud.io/summary/new_code?id=FFXD_kko2017_Flumewright_1928394)
 [![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=FFXD_kko2017_Flumewright_1928394&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=FFXD_kko2017_Flumewright_1928394)
+[![Quality Gate](https://sonarcloud.io/api/project_badges/quality_gate?project=FFXD_kko2017_Flumewright_1928394)](https://sonarcloud.io/summary/new_code?id=FFXD_kko2017_Flumewright_1928394)
 
 Flumewright is a high-throughput message bus where a standalone **Broker** process mediates
 communication between **Publisher** and **Subscriber** processes over gRPC, following the

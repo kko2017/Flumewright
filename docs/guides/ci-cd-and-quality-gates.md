@@ -23,6 +23,7 @@ graph TD
 * **Execution:** Triggered locally via git hooks and on every commit push to GitHub.
 * **Scope:** Compile checks (with `WarningsAsErrors` enabled in `Directory.Build.props`) and rapid unit test suite execution.
 * **Purpose:** Block obviously broken commits from entering remote branches.
+* **Supply-chain:** all GitHub Actions in the workflows are pinned to commit SHAs (not moving tags) so only reviewed action code runs; Dependabot keeps the pins updated.
 
 ### Gate 2: Code Quality & Security (SAST)
 * **SonarCloud (Primary Quality Gate):**
@@ -36,14 +37,23 @@ graph TD
   * Enabled in the background for automated dependency vulnerability scanning and PR generation.
   * Serves as background hygiene; not featured as a primary pipeline step.
 
+**Rollout & gating model:** the SonarCloud and CodeQL gates are introduced **soft first** — they run and
+report on PRs but are not yet required checks in the branch-protection ruleset (a failure does not block
+merge). After an observation period each is promoted to a **required check** (hard). The SonarCloud Quality
+Gate evaluates **new code** (what a PR changed) rather than the whole tree, so it can be enforced without
+legacy code blocking progress. (Concepts and lessons — OpenCover vs Cobertura, new-code gating, static
+analysis vs human review, the Dependabot-secret pitfall — are written up in
+[study-notes §11.8](../learning/study-notes.md).)
+
 ### Gate 3: Test Coverage (Coverlet)
-* **Execution:** Coverlet collector runs as part of the test runner:
+* **Execution:** Coverlet collector runs as part of the test runner, emitting **OpenCover** format
+  (SonarCloud's .NET scanner reads OpenCover; the default Cobertura format causes a silent "coverage 0%"):
   ```bash
-  dotnet test --collect:"XPlat Code Coverage"
+  dotnet test --collect:"XPlat Code Coverage" -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover
   ```
-* **Output:** Cobertura XML format.
-* **Coverage Strategy:** 
-  * Rather than chasing an arbitrary 100% score, the coverage gate threshold starts below the currently measured coverage and is raised gradually as features stabilize.
+* **Output:** OpenCover XML, uploaded to SonarCloud by the SonarScanner step.
+* **Coverage Strategy:**
+  * Rather than chasing an arbitrary 100% score, the gate evaluates **new code** (a PR's changes) instead of the whole tree; this is the actual mechanism for "start low, raise gradually" — the gate can be on from the start without legacy code blocking it, and overall coverage rises as well-tested new code accumulates. (Overall coverage is ~91% as of M2.)
   * Coverage maps tested code paths, highlighting gaps rather than acting as a rigid metric.
 * **Exclusions:** To ensure an accurate signal, the following paths are explicitly excluded from the coverage denominator:
   * Auto-generated Protobuf code (`Flumewright.Protocol`)

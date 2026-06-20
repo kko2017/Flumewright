@@ -664,3 +664,36 @@
 - **Note:** the new test injects the fault via reflection on private members, so it is coupled to
   internal names and may need updating if `Partition`/`_messages` are renamed — an accepted trade-off
   given there is no clean public seam to inject a reader fault.
+
+## DEC-019 — CI/CD quality-gate hardening: executed (soft stage complete; hard pending)
+- **Status:** Executes DEC-017 (which was reserved). Soft stage **complete**; hard stage (required ruleset
+  checks) deferred until after an observation period.
+- **Context:** post-M2 infrastructure interval, before M3. All work done on `chore/ci-quality-gates`, merged
+  to `main` in pieces (each gate verified live, then the branch rebased onto latest main for the next piece).
+- **What shipped (soft stage):**
+  - **Coverage** — `coverlet.collector` on unit + integration tests, **OpenCover** format. SonarCloud shows
+    ~91% on Overall Code.
+  - **SonarCloud** — SonarScanner wraps the build in `ci.yml` (begin → build → test → end); new-code gating;
+    soft (not in the ruleset).
+  - **CodeQL** — separate `codeql.yml` (csharp, `build-mode: autobuild`); 17/17 files analyzed, 0 alerts; soft.
+  - **Dependabot** — `dependabot.yml` (nuget + github-actions, weekly); opened and processed the initial wave
+    of update PRs.
+  - **Supply-chain** — all workflow actions pinned to commit SHAs (ci/release/load).
+  - **README badges** — Quality Gate, Coverage, Bugs, Vulnerabilities, CI status (public identifiers; only
+    `SONAR_TOKEN` is secret).
+  - **FIX-010** — empty `catch (Exception)` removed (recorded separately).
+- **Trip-ups worth remembering:**
+  - **`sonar-project.properties` is rejected by the .NET scanner** — `dotnet-sonarscanner` does not read it
+    and errors if present; all settings must be `/d:` args on `begin`. The file was created, then deleted.
+  - **Dependabot PRs don't get Actions secrets** — `SONAR_TOKEN` is empty on Dependabot PRs unless also
+    registered as a separate **Dependabot secret**. (CI failed only on Dependabot PRs until this was added.)
+  - **A `git stash` conflict left merge markers in `ci.yml`** ("Updated upstream / Stashed changes"),
+    producing "invalid workflow file" until resolved by hand — a reminder to fence which branch each piece
+    runs on and to not stash across conflicting edits.
+- **Rollout model:** each gate goes **soft → hard**. **Hard stage complete:** SonarCloud Code Analysis and
+  CodeQL's `Analyze (csharp)` are now **required status checks** in the main branch-protection ruleset, joining
+  `build-and-test`; the ruleset also requires a PR before merging and branches to be up to date. From now a
+  failing quality gate or security analysis blocks merge. (Justified by ~91% coverage, 0 CodeQL alerts, Quality
+  Gate passing at the time of promotion.)
+- **Docs:** concepts/lessons written up in study-notes §11.8 (8 interview-ready items); pipeline definition in
+  `docs/guides/ci-cd-and-quality-gates.md`. (See also DEC-017, FIX-010.)
