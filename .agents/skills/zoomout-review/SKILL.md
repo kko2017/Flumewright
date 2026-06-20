@@ -18,6 +18,12 @@ scope creep.
 - After the checkpoint reviews (§7.6), before the user merges to main.
 - NOT per step. NOT mid-milestone.
 
+## Reviewer sub-agent (run first)
+Before writing your own findings, run the `code-review` skill over the milestone's **full diff** (an
+isolated reviewer sub-agent, fresh eyes, the concurrency/exception/flaky-test checklist). Fold its
+findings into this report alongside your own — verbatim, with disagreements surfaced. The zoom-out is the
+milestone-boundary layer; the reviewer is the fresh-eyes layer; both feed the one report the human reads.
+
 ## Inputs to read first (the guardrail matters)
 Read these before reviewing:
 - `docs/decisions/decision-and-fix-log.md` — **the guardrail.** Its intentionally-deferred items are NOT
