@@ -335,7 +335,7 @@
   *Clone Repository in Container Volume* (a named volume checked out as `vscode`), which eliminates the
   bind-mount ownership class of problems entirely. Not a code defect; an environment artifact.
 
-## FIX-008 — Integration test could hang instead of failing on timeout
+## FIX-008 — Integration test could hang instead of failing on timeout 🔒
 - **Milestone/Step:** M1 zoom-out review (post-M1, before merge) → fixed
 - **Severity:** test robustness defect (never fires on the happy path; only when the e2e test is already
   failing) — not a production-code bug
@@ -550,7 +550,7 @@
 - **Rationale:** the per-call friction outweighed its marginal control value given the other layers. This is a
   deliberate friction/control trade-off, recorded so the reasoning is auditable.
 
-## FIX-009 — Checkpoint A caught a LATEST-semantics bug in the channel store (became the trigger for DEC-015)
+## FIX-009 — Checkpoint A caught a LATEST-semantics bug in the channel store (became the trigger for DEC-015) 🔒
 - **Milestone/Step:** M2 Step 3 (original channel-based version), found at CHECKPOINT A.
 - **Type:** `[correctness/bug]` — caught by checkpoint review, not by passing tests.
 - **What:** the first channel-based Step 3 store built one bounded channel per partition and drained them into
@@ -632,7 +632,7 @@
 - **Disposition:** fixes A and B approved and committed on `feat/m2-partitioning`. Next: docs sync (study-notes
   §11.65 + this entry), then user merges M2 to main via a merge commit. **No tag** (v0.1.0 = Phase 1 / M6).
 
-## FIX-010 — Empty `catch (Exception)` in SubscribeAsync silently swallowed partition-reader faults
+## FIX-010 — Empty `catch (Exception)` in SubscribeAsync silently swallowed partition-reader faults 🔒
 - **Milestone/Step:** found during the CI/CD hardening interval (after M2 merge), by the newly
   introduced **SonarCloud** analysis (rules S2486 "handle the exception" / S108 "empty block").
 - **Type:** `[correctness/quality]` — caught by static analysis, NOT by tests or human review.
@@ -697,3 +697,8 @@
   Gate passing at the time of promotion.)
 - **Docs:** concepts/lessons written up in study-notes §11.8 (8 interview-ready items); pipeline definition in
   `docs/guides/ci-cd-and-quality-gates.md`. (See also DEC-017, FIX-010.)
+- **Follow-up (deferred):** the `Code scanning results / CodeQL` check (GitHub's alert-judging layer, distinct
+  from the `Analyze (csharp)` job which is already required) is **left non-required for now** — `Analyze
+  (csharp)` already forces CodeQL to run, and code-scanning alerts are 0 at this stage. Promote `Code scanning
+  results` to a required check around **M4** (when mTLS enlarges the security surface), after checking the
+  severity threshold in Settings → Code security.
