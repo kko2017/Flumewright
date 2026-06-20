@@ -682,6 +682,112 @@ environment). (Decisions: 09 DEC-009 · DEC-010 · FIX-007)
 
 ---
 
+## 11.8 CI/CD & quality gates
+
+Built during the post-M2 infrastructure interval (DEC-017). The goal: move CI beyond "build + tests pass"
+to **layered, visible, industry-standard quality and security gates**. The full pipeline design lives in
+`docs/guides/ci-cd-and-quality-gates.md`; this section captures the *concepts and lessons* — several are
+strong interview material and are flagged **⭐ Interview-ready** below.
+
+### The three independent PR gates ⭐ Interview-ready
+A PR into `main` runs **three gates that are separate systems and do not share results** — each posts its
+own check:
+1. **build-and-test** (GitHub Actions `ci.yml`) — compile + unit/integration tests. Baseline correctness.
+2. **SonarCloud Quality Gate** — overall quality: coverage, code smells, duplication, maintainability, some
+   vulnerabilities. The *primary* quality gate.
+3. **CodeQL** — deep security SAST (data-flow analysis for injection, unsafe deserialization, etc.); results
+   in the GitHub Security tab.
+
+The interview point: **why both SonarCloud and CodeQL?** They don't overlap meaningfully — SonarCloud is
+broad (overall quality), CodeQL is deep (security data-flow). Neither replaces the other. Analogy: a metal
+detector (broad screen) plus an explosives dog (specialized) — independent screenings, both must pass.
+CodeQL does **not** flow through SonarCloud's gate; each is wired into the branch ruleset separately.
+
+### New-code gating — the "start low, raise gradually" mechanism ⭐ Interview-ready
+A naive coverage gate ("whole codebase ≥ 80%") floods CI with red on day one and never passes. The better
+design, which SonarCloud supports natively, is to gate **new code** (what *this PR* changed), not the whole
+tree:
+- "New code coverage ≥ X%" means *don't pay down old debt, but test what you write now.*
+- The gate can be **on from the start** without legacy code blocking it, and overall coverage **rises
+  naturally** as well-covered new code accumulates.
+This is the actual mechanism behind "start the threshold low and raise it gradually" — you don't hand-tune a
+global number, you let the new-code gate do the work. (A favorite follow-up: "how do you add a coverage gate
+to a legacy project without halting the team?" → new-code gating.)
+
+### Soft → hard rollout ⭐ Interview-ready
+Turning on a *blocking* gate all at once risks paralysing work, so gates roll out in two stages:
+1. **Soft** — the gate runs and its result shows on the PR, but it is **not** in the branch-protection
+   ruleset; a failure does not block merge. Observe behaviour for a while.
+2. **Hard** — once understood, add it as a **required status check** in the ruleset; from then a shortfall
+   blocks merge.
+This applies per gate (SonarCloud, CodeQL each go soft → hard). It's a low-risk way to introduce enforcement
+without a "big bang" that surprises everyone with red.
+
+### Coverage tooling: Coverlet, and why OpenCover not Cobertura ⭐ Interview-ready
+- **Coverlet** (`coverlet.collector`) collects .NET coverage during `dotnet test --collect:"XPlat Code
+  Coverage"`. It can emit different formats.
+- **Critical detail:** the default format is **Cobertura**, but SonarCloud's .NET scanner reads
+  **OpenCover**. Using the default silently produces **"coverage 0%"** in SonarCloud — the single most common
+  first-integration failure. The fix is to force the format:
+  `... --collect:"XPlat Code Coverage" -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=opencover`.
+  (We hit this exact trap; once OpenCover was used, coverage jumped from 0% to ~91%.)
+- **Exclusions** keep the % meaningful: generated proto code, `Program.cs` (host bootstrap), and the
+  Observability/Security skeletons are excluded from the denominator — otherwise unwritten/auto-generated
+  code drags the number down unfairly.
+
+### Static analysis vs human review — complementary, not redundant ⭐ Interview-ready
+A standout lesson (FIX-010): right after SonarCloud was introduced, it flagged an empty `catch (Exception)
+{}` in the subscriber's per-partition reader that silently swallowed every exception — a faulted reader would
+die invisibly. **M2's checkpoint reviews and the end-of-milestone zoom-out had both missed it**; a static
+analyzer caught it on day one. The lesson: static analysis and human review see *different* things —
+- **Human review / checkpoints** catch concurrency and semantic bugs a person can reason about (e.g. the
+  lost-wakeup / LATEST-drop bug, FIX-009).
+- **Static analysis** catches mechanical hazards a human skims past (an empty catch, an unhandled return).
+Both are worth having; "a green test run is a starting point, not a conclusion" (§11.65) cuts both ways.
+
+### Supply-chain hardening: pin actions to commit SHAs ⭐ Interview-ready
+GitHub Actions referenced by a moving tag (`actions/checkout@v6`) are a **supply-chain risk**: a tag can be
+repointed (compromised maintainer, hijacked repo) to a malicious commit, which CI would then run with access
+to the repo's tokens and secrets. Pinning to an immutable **commit SHA** (`actions/checkout@<40-char-sha>  #
+v6`) ensures only the exact, reviewed code runs. This is a standard hardening practice and a concrete,
+credible security detail to mention. Trade-off: SHAs are opaque and need maintenance — which is what
+Dependabot automates (below).
+
+### Dependabot — and the secret it can't see ⭐ Interview-ready
+- **Dependabot** is a GitHub bot (not a workflow): a `dependabot.yml` on the default branch makes it scan
+  dependencies weekly and open **PRs** for updates (it never merges — a human reviews). We watch two
+  ecosystems: **nuget** (.NET packages) and **github-actions** (keeps the SHA-pinned actions current).
+- **The trap we hit:** Dependabot-opened PRs **do not receive the repository's normal Actions secrets** — by
+  design, so a malicious dependency update can't exfiltrate them. So a CI step that needs `SONAR_TOKEN` fails
+  on Dependabot PRs ("the format of the analysis property sonar.token= is invalid", because the token is
+  empty). The fix: register the token *separately* as a **Dependabot secret** (Settings → Secrets →
+  Dependabot), which is a different store from Actions secrets. (Good interview answer to "why did SonarCloud
+  fail only on Dependabot PRs?")
+
+### What is *not* a gate — monitoring vs gating
+Not every job blocks a merge. **Load/stress tests (`load.yml`) run nightly/manually, not per-PR**, because
+they are slow and environment-sensitive — using flaky, runner-dependent timing as a merge gate would be the
+performance-axis version of a flaky test (§11.65). They are *monitoring* (catching regressions over time),
+not a gate. General rule: **fast + deterministic → per-PR gate; slow or noisy → periodic monitoring.**
+
+### Concurrency testing has its own ladder
+Static analysis and SonarCloud do **not** catch concurrency bugs. Those are addressed by a tiered approach:
+checkpoint code review (humans reasoning about interleavings) + concurrency unit tests (e.g. 1000 concurrent
+appends asserting unique/contiguous offsets) + load tests (indirect exposure). **Microsoft Coyote** —
+systematic concurrency testing that deterministically explores schedules to find races/deadlocks — is the
+tool for *direct* detection, reserved for **after M3** (when consumer-group/offset-commit concurrency
+arrives). **Newman/Postman was rejected**: it's a REST/HTTP functional runner, but we're gRPC + protobuf and
+need concurrency analysis, not API-functional assertions — a category mismatch, not just a tooling preference.
+
+### Why this matters for the portfolio
+The repo is public and doubles as a portfolio piece, so the gates are deliberately **visible**: README badges
+(Quality Gate, Coverage, Bugs, Vulnerabilities, CI status), a SonarCloud dashboard, and PR checks. "I added a
+coverage + quality + security gate set, gated new code so it didn't block legacy, rolled out soft→hard, and
+pinned actions for supply-chain safety" is a compact, senior-sounding CI/CD story. (Decisions: 09 DEC-017 ·
+FIX-010)
+
+---
+
 ## 12. Glossary
 
 | Term | Meaning |
