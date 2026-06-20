@@ -85,6 +85,18 @@ mechanisms, verification discipline, and cost strategy.
 
 See [docs/design/plan.md](docs/design/plan.md) for the full design.
 
+### Concurrency
+
+A message bus lives or dies on concurrency correctness — many publishers append at once, many
+subscribers read at once, and each partition is served by its own background reader. A single race,
+lost wakeup, or swallowed exception can silently drop a message or hang a subscriber. Flumewright
+defends concurrency in **depth — five independent layers**: disciplined code patterns, human +
+isolated-AI review, static analysis (Roslyn `CA1031` / SonarCloud / CodeQL), concurrency tests, and
+systematic schedule exploration (Microsoft Coyote, planned). Two real bugs have already been caught
+by *different* layers (FIX-009 by human review, FIX-010 by static analysis).
+
+Full strategy → **[Concurrency Strategy](docs/design/concurrency-strategy.md)**.
+
 ---
 
 ## 🚀 Quick Start
@@ -167,6 +179,7 @@ See [docs/guides/version-control-and-validation-guide.md](docs/guides/version-co
 ## 📚 Documentation
 
 - [Execution Plan](docs/design/plan.md)
+- [Concurrency Strategy](docs/design/concurrency-strategy.md) — defense-in-depth across five layers
 - [Message Bus & PubSub Study Notes](docs/learning/study-notes.md)
 - [Version Control & Validation Guide](docs/guides/version-control-and-validation-guide.md)
 - [AI Collaboration & Cost Strategy](docs/ai-collaboration.md)

@@ -22,6 +22,7 @@ task needs the specifics. Do not restate or duplicate those docs here.
 ## Scope discipline
 - Build only what the current milestone's instruction asks. Do **not** add features, future-milestone work, or out-of-scope refactors.
 - Items recorded as **intentionally deferred** in the decision-and-fix log are NOT defects and must not be "helpfully" added or flagged. The decision log is the guardrail.
+- When a fix or change is concurrency-related (a 🔒 topic), after logging it in the decision-and-fix log, **flag to the human whether the concurrency-strategy doc (`docs/design/concurrency-strategy.md`) needs updating** — do not auto-edit it. Curation of that doc stays with the human; this is a reminder, not an automated sync.
 
 ## Verification philosophy
 - A passing test or a "looks clean" report is a **starting point, not a conclusion**. The human is the approver.

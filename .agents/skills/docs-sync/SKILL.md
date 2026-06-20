@@ -22,6 +22,7 @@ instruction docs (04/05/07/NN-phaseX-*) are personal and NEVER committed.
 | Root source | docs/ path |
 |-------------|-----------|
 | 01-execution-plan.en.md | docs/design/plan.md |
+| 11-concurrency-strategy.en.md | docs/design/concurrency-strategy.md |
 | 02-study-notes.en.md | docs/learning/study-notes.md |
 | 03-version-control-guide.en.md | docs/guides/version-control-and-validation-guide.md |
 | 09-decision-and-fix-log.en.md | docs/decisions/decision-and-fix-log.md |
@@ -38,6 +39,7 @@ For each mapped pair, compare the root source to its docs/ copy and list only th
 ```bash
 for pair in \
   "01-execution-plan.en.md:docs/design/plan.md" \
+  "11-concurrency-strategy.en.md:docs/design/concurrency-strategy.md" \
   "02-study-notes.en.md:docs/learning/study-notes.md" \
   "03-version-control-guide.en.md:docs/guides/version-control-and-validation-guide.md" \
   "09-decision-and-fix-log.en.md:docs/decisions/decision-and-fix-log.md" \

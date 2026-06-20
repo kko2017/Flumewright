@@ -62,9 +62,9 @@ analysis vs human review, the Dependabot-secret pitfall — are written up in
 
 ---
 
-## 2. Concurrency-Testing Strategy
+## 2. Concurrency-Testing Strategy 🔒
 
-Because Flumewright is a concurrent, asynchronous message broker, standard unit and integration tests are insufficient to guarantee correctness under load. We use a risk-tiered testing framework:
+Because Flumewright is a concurrent, asynchronous message broker, standard unit and integration tests are insufficient to guarantee correctness under load. We use a risk-tiered testing framework. (This is the CI-side view of the tiers below; the full five-layer concurrency strategy lives in [concurrency-strategy](../design/concurrency-strategy.md).)
 
 ### Tier 1: Concurrency Unit Tests
 * Safe, concurrent test blocks built directly into the unit test suite (e.g. `Offsets_AreUniqueAndContiguousUnderConcurrentPublishes` executing 1,000 concurrent appends).
