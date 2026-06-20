@@ -16,6 +16,7 @@ task needs the specifics. Do not restate or duplicate those docs here.
 - Grouped execution (running several steps to a checkpoint) must NOT become a grouped commit — keep per-step commits.
 - **Stop immediately** and report if a build/test fails OR a decision is needed that the plan does not cover. Never push forward on a guess.
 - Do **one step (or one checkpoint group) at a time**; do not start the next until told.
+- At a **checkpoint**, before your own `checkpoint-review` self-report, run `code-review` (isolated reviewer sub-agent over the diff). Relay its findings **verbatim** + your per-finding opinion; surface every disagreement to the human — never summarize away or silently overrule a reviewer concern.
 - Conventional Commits format (`feat`/`fix`/`test`/`refactor`/`perf`/`docs`/`chore`).
 
 ## Scope discipline
@@ -38,6 +39,7 @@ task needs the specifics. Do not restate or duplicate those docs here.
 
 ## Skills (use the right one; restart `agy` after adding/editing a skill)
 - `checkpoint-review` — at a milestone checkpoint: self-report per step + high-risk self-checks, then stop.
+- `code-review` — at a checkpoint (and within `zoomout-review`): an isolated reviewer sub-agent inspects the diff against a concurrency/exception/flaky-test checklist; report-only, findings tagged [fix]/[suppress+reason]/[human judgment].
 - `zoomout-review` — end-of-milestone whole-codebase review (report-only, 3 buckets, scope-fenced).
 - `docs-sync` — sync changed root `NN-*.en.md` into `docs/` paths with verification, then commit.
 
