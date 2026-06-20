@@ -43,6 +43,7 @@ task needs the specifics. Do not restate or duplicate those docs here.
 - `code-review` — at a checkpoint (and within `zoomout-review`): an isolated reviewer sub-agent inspects the diff against a concurrency/exception/flaky-test checklist; report-only, findings tagged [fix]/[suppress+reason]/[human judgment].
 - `zoomout-review` — end-of-milestone whole-codebase review (report-only, 3 buckets, scope-fenced).
 - `docs-sync` — sync changed root `NN-*.en.md` into `docs/` paths with verification, then commit.
+- `doc-review` — **on demand only** (when the user asks): isolated review of the English canonical docs for duplication, cross-doc drift, structural awkwardness, and stale cross-references; report-only. Not automatic, not per checkpoint.
 
 ## Never
 - No secrets in the repo (certs/keys: `*.pfx`/`*.key`/`*.pem`/...). Generate locally, commit only generators.
