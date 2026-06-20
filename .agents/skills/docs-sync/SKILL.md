@@ -68,6 +68,45 @@ Pick markers from the actual change (e.g. a new section heading, a new DEC/FIX i
 **If any wc -l pair does not match, or any marker grep returns 0 → STOP and report. Do NOT commit.**
 A copy that "ran" but left stale content is the exact failure this skill guards against.
 
+### 3.5 If the file has a Table of Contents, verify its anchors (02 and 09)
+Some docs carry a linked Table of Contents whose entries jump to section headings (currently
+`02-study-notes` and `09-decision-and-fix-log`). A TOC link only works if its anchor exactly matches the
+heading's GitHub-generated id. Before committing such a file, check **both**:
+
+1. **No broken anchors** — every TOC link `[...](#anchor)` resolves to a real heading in the same file.
+2. **No missing entries** — if this sync added a new section / DEC / FIX, the TOC has a matching entry.
+
+**GitHub heading-id (anchor slug) rule** — this is where it goes wrong, so follow it exactly:
+- lowercase; spaces → `-`;
+- characters like em-dash `—`, `&`, `/`, `+`, `:`, backtick `` ` ``, `.`, `(` `)` are **removed, and a
+  hyphen is left in their place — adjacent hyphens are NOT collapsed**, so they become **double hyphens**;
+- Hangul/CJK characters are kept as-is.
+- Examples (real ones from this repo):
+  - `## FIX-001 — Fan-out broken: ...` → `#fix-001--fan-out-broken-...` (em-dash → `--`, `:` dropped)
+  - ``## DEC-003 — `global.json` rollForward = latestFeature (not latestMinor)`` → `#dec-003--globaljson-rollforward--latestfeature-not-latestminor`
+- If unsure, open the file on GitHub and copy the heading's 🔗 link to read the real id.
+
+A quick way to check all anchors resolve (run on the docs/ copy):
+```bash
+# extract TOC anchors and heading slugs, list any anchor with no matching heading
+python3 - "$DOCS_PATH" <<'PY'
+import re,sys
+c=open(sys.argv[1]).read()
+def slug(h):
+    s=h.strip().lower();o=[]
+    for ch in s:
+        if ch.isalnum() or ch=='-':o.append(ch)
+        elif ch==' ':o.append('-')
+        elif '\uac00'<=ch<='\ud7a3' or '\u4e00'<=ch<='\u9fff':o.append(ch)
+    return ''.join(o)
+heads={slug(l[3:]) for l in c.splitlines() if l.startswith('## ') or l.startswith('### ')}
+anchors=re.findall(r'\]\(#([^)]+)\)',c)
+bad=[a for a in anchors if a not in heads]
+print("BROKEN:",bad) if bad else print("all TOC anchors resolve")
+PY
+```
+**If any anchor is broken, or a new section has no TOC entry → STOP and report. Do NOT commit.**
+
 ### 4. Commit (only if every check passed)
 - Stage ONLY the synced target paths with explicit per-file `git add <path>`. NEVER `git add .` / `-A`.
   (Targets are the `docs/` paths above, plus the root `README.md` for the 06 mapping.)
