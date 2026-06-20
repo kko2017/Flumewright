@@ -8,19 +8,19 @@
 
 ## Table of Contents
 
-1. What is the PubSub pattern
-2. What is a message bus
-3. Reference models: Kafka vs Google Pub/Sub
-4. Delivery guarantee: At-least-once + ack/nack
-5. Schema Registry (type safety)
-6. mTLS certificate-based security
-7. Observability: Metrics / Tracing / Logging
-8. Consumer Group & Partitioning
-9. Payload opacity (key to extensibility)
-10. gRPC transport patterns
-11. High-throughput (100K+) techniques
-12. Glossary
-13. How the concepts fit together
+1. [What is the PubSub pattern](#1-what-is-the-pubsub-pattern)
+2. [What is a message bus](#2-what-is-a-message-bus)
+3. [Reference models: Kafka vs Google Pub/Sub](#3-reference-models-kafka-vs-google-pubsub)
+4. [Delivery guarantee: At-least-once + ack/nack](#4-delivery-guarantee-at-least-once-acknack)
+5. [Schema Registry (type safety)](#5-schema-registry-type-safety)
+6. [mTLS certificate-based security](#6-mtls-certificate-based-security)
+7. [Observability: Metrics / Tracing / Logging](#7-observability-metrics-tracing-logging)
+8. [Consumer Group & Partitioning](#8-consumer-group-partitioning)
+9. [Payload opacity (key to extensibility)](#9-payload-opacity-key-to-extensibility)
+10. [gRPC transport patterns](#10-grpc-transport-patterns)
+11. [High-throughput (100K+) techniques](#11-high-throughput-100k-techniques)
+12. [Glossary](#12-glossary)
+13. [How the concepts fit together](#13-how-the-concepts-fit-together)
 
 ---
 
