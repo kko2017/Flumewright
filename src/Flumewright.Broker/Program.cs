@@ -19,6 +19,9 @@ var app = builder.Build();
 app.MapGrpcService<MessageBusService>();
 app.MapGet("/", () => "Communication with gRPC endpoints must be made through a gRPC client.");
 
-app.Run();
+await app.RunAsync();
 
-public partial class Program;
+public partial class Program
+{
+    private Program() { }
+}
