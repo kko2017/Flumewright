@@ -82,10 +82,12 @@ public sealed class PublishSubscribeE2ETests : IClassFixture<BrokerAppFactory>
                     break;
                 }
             }
+#pragma warning disable CA1031 // background task exception marshaled to test thread via TrySetException (surfaced, not swallowed)
             catch (Exception ex)
             {
                 received.TrySetException(ex);
             }
+#pragma warning restore CA1031
         }, cts.Token);
 
         PublishAck? ack = null;
@@ -152,11 +154,13 @@ public sealed class PublishSubscribeE2ETests : IClassFixture<BrokerAppFactory>
                     }
                 }
             }
+#pragma warning disable CA1031 // background task exception marshaled to test thread via TrySetException (surfaced, not swallowed)
             catch (Exception ex)
             {
                 syncReceived.TrySetException(ex);
                 tcs.TrySetException(ex);
             }
+#pragma warning restore CA1031
         }, cts.Token);
 
         // 1. Establish subscription via sync message
