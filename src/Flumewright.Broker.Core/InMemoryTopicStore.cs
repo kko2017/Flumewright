@@ -11,7 +11,7 @@ namespace Flumewright.Broker.Core;
 
 public sealed class InMemoryTopicStore : ITopicStore
 {
-    private class Partition
+    private sealed class Partition
     {
         public int Index { get; }
         private readonly List<StoredMessage> _messages = new();
@@ -87,7 +87,7 @@ public sealed class InMemoryTopicStore : ITopicStore
         }
     }
 
-    private class Topic
+    private sealed class Topic
     {
         public Partition[] Partitions { get; }
         private long _rrCounter = -1;
