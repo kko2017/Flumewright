@@ -36,6 +36,10 @@ public sealed class InMemoryCommittedOffsetStore : ICommittedOffsetStore
             long? highWatermarkOpt = _topicStore.GetPartitionHighWatermark(topic, partition);
             if (!highWatermarkOpt.HasValue)
             {
+                // (a) A commit acks records actually read; a topic/partition that was never published was never
+                // read, so reject. The (b) variant — allowing commit(0) on a pre-created empty topic — is
+                // deferred; switching to it would require a new DEC and an API to pre-create empty topics.
+                // See DEC-023.
                 return new ValueTask<(bool, string)>((false, "Unknown topic or invalid partition"));
             }
             long highWatermark = highWatermarkOpt.Value;
