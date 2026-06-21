@@ -12,6 +12,22 @@ public class InMemoryCommittedOffsetStoreTests
 {
     [Fact]
     [Trait("Category", "Unit")]
+    public async Task GetCommittedOffset_InitialState_ReturnsNull()
+    {
+        var topicStore = new InMemoryTopicStore(1);
+        await topicStore.PublishAsync("t1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
+        await topicStore.PublishAsync("t1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
+
+        var offsetStore = new InMemoryCommittedOffsetStore(topicStore);
+
+        var v1 = await offsetStore.GetCommittedOffsetAsync("g1", "t1", 0);
+        v1.Should().BeNull();
+
+        var v2 = await offsetStore.GetCommittedOffsetAsync("g2", "t1", 0);
+        v2.Should().BeNull();
+    }
+    [Fact]
+    [Trait("Category", "Unit")]
     public async Task ForwardCommitUpdates_ReadBackReturnsCommittedValue()
     {
         var topicStore = new InMemoryTopicStore(1);
