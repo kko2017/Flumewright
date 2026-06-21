@@ -7,6 +7,8 @@ service MessageBus {
   rpc Publish(PublishEnvelope) returns (PublishAck);
   // M1: server-streaming subscribe — the PubSub essence, kept from the start.
   rpc Subscribe(SubscribeRequest) returns (stream DeliverEnvelope);
+  // M3a: manual batch commit of offsets
+  rpc CommitOffset(CommitRequest) returns (CommitAck);
 }
 
 message PublishEnvelope {
@@ -28,6 +30,14 @@ message PublishAck {
 
 message SubscribeRequest {
   string topic = 1;
+  string group_id = 2;
+  repeated int32 partitions = 3;
+  OffsetReset reset = 4;
+}
+
+enum OffsetReset {
+  EARLIEST = 0;
+  LATEST = 1;
 }
 
 message DeliverEnvelope {
@@ -36,4 +46,16 @@ message DeliverEnvelope {
   map<string, string> headers = 3;
   bytes  payload = 4;
   int32  partition = 5;
+}
+
+message CommitRequest {
+  string group_id = 1;
+  string topic = 2;
+  int32 partition = 3;
+  int64 offset = 4;
+}
+
+message CommitAck {
+  bool ok = 1;
+  string reason = 2;
 }
