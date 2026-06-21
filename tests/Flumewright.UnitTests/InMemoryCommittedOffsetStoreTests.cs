@@ -54,9 +54,22 @@ public class InMemoryCommittedOffsetStoreTests
         var topicStore = new InMemoryTopicStore(1);
         var offsetStore = new InMemoryCommittedOffsetStore(topicStore);
 
+        // Unknown topic
+        var rejectUnknown = await offsetStore.CommitOffsetAsync("g1", "unknown", 0, 0);
+        rejectUnknown.Ok.Should().BeFalse();
+        rejectUnknown.Reason.Should().Be("Unknown topic or invalid partition");
+
         // Topic has 0 messages (highWatermark=0). offset 0 is ACCEPTED ("nothing processed")
+        // Implicitly create the empty topic t1
+        topicStore.ReadPartitionAsync("t1", 0, 0);
+
         var resultZero = await offsetStore.CommitOffsetAsync("g1", "t1", 0, 0);
         resultZero.Ok.Should().BeTrue();
+
+        // Invalid partition
+        var rejectInvalidPartition = await offsetStore.CommitOffsetAsync("g1", "t1", 99, 0);
+        rejectInvalidPartition.Ok.Should().BeFalse();
+        rejectInvalidPartition.Reason.Should().Be("Unknown topic or invalid partition");
 
         // offset 1 is REJECTED
         var resultOne = await offsetStore.CommitOffsetAsync("g1", "t1", 0, 1);
@@ -94,10 +107,14 @@ public class InMemoryCommittedOffsetStoreTests
         var offsetStore = new InMemoryCommittedOffsetStore(topicStore);
         
         // Commits to distinct combinations: (g1, t1, p0), (g2, t1, p0), (g1, t1, p1), (g1, t2, p0)
-        await offsetStore.CommitOffsetAsync("g1", "t1", 0, 5);
-        await offsetStore.CommitOffsetAsync("g2", "t1", 0, 3);
-        await offsetStore.CommitOffsetAsync("g1", "t1", 1, 4);
-        await offsetStore.CommitOffsetAsync("g1", "t2", 0, 2);
+        var res1 = await offsetStore.CommitOffsetAsync("g1", "t1", 0, 5);
+        res1.Ok.Should().BeTrue();
+        var res2 = await offsetStore.CommitOffsetAsync("g2", "t1", 0, 3);
+        res2.Ok.Should().BeTrue();
+        var res3 = await offsetStore.CommitOffsetAsync("g1", "t1", 1, 4);
+        res3.Ok.Should().BeTrue();
+        var res4 = await offsetStore.CommitOffsetAsync("g1", "t2", 0, 2);
+        res4.Ok.Should().BeTrue();
 
         var v1 = await offsetStore.GetCommittedOffsetAsync("g1", "t1", 0);
         var v2 = await offsetStore.GetCommittedOffsetAsync("g2", "t1", 0);
@@ -122,15 +139,30 @@ public class InMemoryCommittedOffsetStoreTests
 
         var offsetStore = new InMemoryCommittedOffsetStore(topicStore);
         
+        var offsetsToCommit = Enumerable.Range(0, 1000).ToList();
+        // Shuffle the offsets so they are not dispatched in purely ascending order.
+        var rng = new Random(42);
+        offsetsToCommit = offsetsToCommit.OrderBy(x => rng.Next()).ToList();
+
+        var gate = new TaskCompletionSource();
         var tasks = new List<Task>();
-        // Committing 0 through 999. The highest valid value committed by this loop is 999.
-        for (int i = 0; i < 1000; i++)
+        
+        // Committing 0 through 999. The highest valid value in this set is 999.
+        // Because the lock prevents lost updates and backwards commits are rejected,
+        // the final value in the map must be the maximum successfully committed valid value (999),
+        // regardless of the exact thread execution order.
+        foreach (int offsetToCommit in offsetsToCommit)
         {
-            int offsetToCommit = i;
             tasks.Add(Task.Run(async () => {
+#pragma warning disable VSTHRD003 // Avoid awaiting foreign Tasks
+                await gate.Task;
+#pragma warning restore VSTHRD003 // Avoid awaiting foreign Tasks
                 await offsetStore.CommitOffsetAsync("g1", "t1", 0, offsetToCommit);
             }));
         }
+
+        // Release the gate to let all tasks race genuinely at the same time
+        gate.SetResult();
 
         // Bounded wait prevents hanging tests in case of deadlock (FIX-008)
         await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(5));
