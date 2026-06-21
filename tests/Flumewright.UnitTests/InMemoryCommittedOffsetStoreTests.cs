@@ -49,37 +49,38 @@ public class InMemoryCommittedOffsetStoreTests
 
     [Fact]
     [Trait("Category", "Unit")]
+    public async Task NegativeOffsetRejected()
+    {
+        var topicStore = new InMemoryTopicStore(1);
+        await topicStore.PublishAsync("t1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
+        var offsetStore = new InMemoryCommittedOffsetStore(topicStore);
+
+        var rejectNegative = await offsetStore.CommitOffsetAsync("g1", "t1", 0, -1);
+        rejectNegative.Ok.Should().BeFalse();
+        rejectNegative.Reason.Should().Be("Offset cannot be negative");
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
     public async Task OutOfRangeCommitRejected()
     {
         var topicStore = new InMemoryTopicStore(1);
         var offsetStore = new InMemoryCommittedOffsetStore(topicStore);
 
-        // Unknown topic
-        var rejectUnknown = await offsetStore.CommitOffsetAsync("g1", "unknown", 0, 0);
+        // Unknown topic: never published, therefore no records read, so reject.
+        var rejectUnknown = await offsetStore.CommitOffsetAsync("g1", "t1", 0, 0);
         rejectUnknown.Ok.Should().BeFalse();
         rejectUnknown.Reason.Should().Be("Unknown topic or invalid partition");
-
-        // Topic has 0 messages (highWatermark=0). offset 0 is ACCEPTED ("nothing processed")
-        // Implicitly create the empty topic t1
-        topicStore.ReadPartitionAsync("t1", 0, 0);
-
-        var resultZero = await offsetStore.CommitOffsetAsync("g1", "t1", 0, 0);
-        resultZero.Ok.Should().BeTrue();
-
-        // Invalid partition
-        var rejectInvalidPartition = await offsetStore.CommitOffsetAsync("g1", "t1", 99, 0);
-        rejectInvalidPartition.Ok.Should().BeFalse();
-        rejectInvalidPartition.Reason.Should().Be("Unknown topic or invalid partition");
-
-        // offset 1 is REJECTED
-        var resultOne = await offsetStore.CommitOffsetAsync("g1", "t1", 0, 1);
-        resultOne.Ok.Should().BeFalse();
-        resultOne.Reason.Should().NotBeEmpty();
 
         // Publish 1 message -> highWatermark=1
         await topicStore.PublishAsync("t1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
 
-        // offset 1 is now ACCEPTED ("1 record processed")
+        // Invalid partition on existing topic
+        var rejectInvalidPartition = await offsetStore.CommitOffsetAsync("g1", "t1", 99, 0);
+        rejectInvalidPartition.Ok.Should().BeFalse();
+        rejectInvalidPartition.Reason.Should().Be("Unknown topic or invalid partition");
+
+        // offset 1 is ACCEPTED ("1 record processed", valid [0, 1])
         var resultOneNow = await offsetStore.CommitOffsetAsync("g1", "t1", 0, 1);
         resultOneNow.Ok.Should().BeTrue();
 
@@ -144,7 +145,7 @@ public class InMemoryCommittedOffsetStoreTests
         var rng = new Random(42);
         offsetsToCommit = offsetsToCommit.OrderBy(x => rng.Next()).ToList();
 
-        var gate = new TaskCompletionSource();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var tasks = new List<Task>();
         
         // Committing 0 through 999. The highest valid value in this set is 999.
