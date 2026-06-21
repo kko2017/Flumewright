@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: At a checkpoint (and at end-of-milestone zoom-out), have an ISOLATED reviewer sub-agent inspect the accumulated diff against a concurrency/exception/flaky-test checklist, and report findings (with a fix / suppress / human-judgment recommendation each) — report only, never edit. Use when the CLI reaches a checkpoint, or when the user asks for a code review of a diff. The reviewer is a fresh, narrow set of eyes; the main agent relays its findings verbatim plus its own opinion.
+description: At a checkpoint (and at end-of-milestone zoom-out), have an ISOLATED reviewer sub-agent inspect the accumulated diff against a concurrency/exception/flaky-and-fake-green-test checklist, and report findings (with a fix / suppress / human-judgment recommendation each) — report only, never edit. Use when the CLI reaches a checkpoint, or when the user asks for a code review of a diff. The reviewer is a fresh, narrow set of eyes; the main agent relays its findings verbatim plus its own opinion.
 ---
 
 # code-review
@@ -39,15 +39,43 @@ mandate and an explicit checklist catches mechanical/concurrency hazards a self-
 - **Consistency:** a public-contract change (proto / public API) not reflected in docs or tests; new code
   with no test covering it.
 
-## Checklist — test code (flaky-test prevention)
+## Checklist — test code (flaky-test and fake-green prevention)
 Test code is concurrency-heavy here (background `Task.Run`, real Kestrel ports, real gRPC, cancellation +
 timeouts), so it gets its own checks — a flaky or false-passing test is worse than no test (§11.65).
+
+> **Flaky vs fake-green — two different defects, both in scope.** *Flaky* = the same code sometimes passes,
+> sometimes fails (timing-dependent). *Fake-green* = the test passes **every** time but does not actually
+> verify what it claims — it asserts, but the assertion is hollow. A green fake-green test is more dangerous
+> than a flaky one because it never draws attention to itself. The M3a Step 2 checkpoint surfaced several
+> (see the decision-and-fix log); the checks below encode them.
 - **Flaky:** timing-based synchronization (`Task.Delay` / `Thread.Sleep` used to "wait" instead of a real
   signal/TCS); an unbounded wait with no timeout (could hang — see FIX-008); a tight assertion on a
   probabilistic result (deterministic vs probabilistic confusion, §11.65).
 - **False pass:** a background/async result that is never asserted on the main thread; an exception caught
   and dropped so an assertion failure is hidden; a background failure that never propagates to the test
   (the opposite-good pattern is marshaling via `TrySetException` — see PublishSubscribeE2ETests).
+- **Fake-green (asserts, but the assertion is hollow):** the test asserts something, yet the assertion does
+  not exercise the behavior it claims to verify. The test would pass even if the code under test were broken
+  or removed. Specifically check:
+  - **A concurrency test that does not actually create concurrency.** Tasks dispatched in a sequential loop
+    so the last-scheduled one (often the "winning" value) reliably runs last; or a `TaskCompletionSource`
+    start-gate created WITHOUT `RunContinuationsAsynchronously`, so `SetResult()` runs all waiters inline
+    and serially on the calling thread. The litmus test: **would this test still pass if the lock under test
+    were removed?** If yes, it is not testing the race. (A genuine race uses a gate with
+    `RunContinuationsAsynchronously`, shuffled inputs, and a bounded `WhenAll(...).WaitAsync(timeout)`.)
+  - **An assertion that holds only because of an internal implementation detail.** Relying on, e.g.,
+    round-robin distributing N messages exactly evenly across partitions; if the strategy changed the test
+    would silently break. Make the input deterministic instead (e.g. a single-partition store, or an
+    explicit partition key) so the asserted values do not depend on internals.
+  - **Inputs inflated until a case happens to pass**, or scratch/trial-and-error comments left in the test
+    ("might be out of range... let's just publish more") — a sign the test was bent to pass rather than
+    written to verify.
+  - **Vacuous setup:** setup work that never enters the code-under-test's execution path (e.g. publishing
+    to a topic before asserting a guard that short-circuits before touching the topic store; building topic
+    state before a read that only consults a separate map). The test would pass identically with the setup
+    removed — strip it, or assert the actual contract the setup implies.
+  - **A setup step whose own result is discarded** (e.g. a setup commit not asserted `Ok`), so a silent
+    setup failure surfaces later as a confusing assertion failure with a hidden root cause.
 
 ## Recommendation per finding (three levels)
 For EVERY finding, attach exactly one recommendation:
