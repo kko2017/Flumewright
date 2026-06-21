@@ -15,11 +15,16 @@ public class InMemoryCommittedOffsetStoreTests
     public async Task GetCommittedOffset_InitialState_ReturnsNull()
     {
         var topicStore = new InMemoryTopicStore(1);
-        await topicStore.PublishAsync("t1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
-        await topicStore.PublishAsync("t1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
-
         var offsetStore = new InMemoryCommittedOffsetStore(topicStore);
 
+        // Assert null for a never-published topic
+        var vUnknown = await offsetStore.GetCommittedOffsetAsync("g1", "unknown_topic", 0);
+        vUnknown.Should().BeNull();
+
+        // Publish to create topic t1, but don't commit
+        await topicStore.PublishAsync("t1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
+
+        // Assert null for distinct groups on an existing topic
         var v1 = await offsetStore.GetCommittedOffsetAsync("g1", "t1", 0);
         v1.Should().BeNull();
 
@@ -53,7 +58,8 @@ public class InMemoryCommittedOffsetStoreTests
 
         var offsetStore = new InMemoryCommittedOffsetStore(topicStore);
         
-        await offsetStore.CommitOffsetAsync("g1", "t1", 0, 1);
+        var initResult = await offsetStore.CommitOffsetAsync("g1", "t1", 0, 1);
+        initResult.Ok.Should().BeTrue();
 
         var rejectResult = await offsetStore.CommitOffsetAsync("g1", "t1", 0, 0);
         rejectResult.Ok.Should().BeFalse();
@@ -68,7 +74,6 @@ public class InMemoryCommittedOffsetStoreTests
     public async Task NegativeOffsetRejected()
     {
         var topicStore = new InMemoryTopicStore(1);
-        await topicStore.PublishAsync("t1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
         var offsetStore = new InMemoryCommittedOffsetStore(topicStore);
 
         var rejectNegative = await offsetStore.CommitOffsetAsync("g1", "t1", 0, -1);
