@@ -54,16 +54,25 @@ public class InMemoryCommittedOffsetStoreTests
         var topicStore = new InMemoryTopicStore(1);
         var offsetStore = new InMemoryCommittedOffsetStore(topicStore);
 
-        // Topic has 0 messages, so any offset >= 0 is out of range
-        var result = await offsetStore.CommitOffsetAsync("g1", "t1", 0, 0);
-        result.Ok.Should().BeFalse();
-        result.Reason.Should().NotBeEmpty();
+        // Topic has 0 messages (highWatermark=0). offset 0 is ACCEPTED ("nothing processed")
+        var resultZero = await offsetStore.CommitOffsetAsync("g1", "t1", 0, 0);
+        resultZero.Ok.Should().BeTrue();
 
+        // offset 1 is REJECTED
+        var resultOne = await offsetStore.CommitOffsetAsync("g1", "t1", 0, 1);
+        resultOne.Ok.Should().BeFalse();
+        resultOne.Reason.Should().NotBeEmpty();
+
+        // Publish 1 message -> highWatermark=1
         await topicStore.PublishAsync("t1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
 
-        // Topic has 1 message (offset 0), so offset 1 is out of range
-        var result2 = await offsetStore.CommitOffsetAsync("g1", "t1", 0, 1);
-        result2.Ok.Should().BeFalse();
+        // offset 1 is now ACCEPTED ("1 record processed")
+        var resultOneNow = await offsetStore.CommitOffsetAsync("g1", "t1", 0, 1);
+        resultOneNow.Ok.Should().BeTrue();
+
+        // offset 2 is REJECTED
+        var resultTwo = await offsetStore.CommitOffsetAsync("g1", "t1", 0, 2);
+        resultTwo.Ok.Should().BeFalse();
     }
 
     [Fact]
@@ -71,26 +80,20 @@ public class InMemoryCommittedOffsetStoreTests
     public async Task IndependentKeys_DoNotInterfere()
     {
         var topicStore = new InMemoryTopicStore(2);
-        await topicStore.PublishAsync("t1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
-        await topicStore.PublishAsync("t1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
-        await topicStore.PublishAsync("t1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
-        await topicStore.PublishAsync("t1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
-
-        var offsetStore = new InMemoryCommittedOffsetStore(topicStore);
-
-        // We assume the messages got distributed to partitions 0 and 1, so both partitions have messages (at least 1, max 2)
-        // For simplicity we use partition 0 for t1, partition 0 for t2
-        await topicStore.PublishAsync("t2", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
-
-        await offsetStore.CommitOffsetAsync("g1", "t1", 0, 0);
-        await offsetStore.CommitOffsetAsync("g2", "t1", 0, 1); // might be out of range if only 1 message went to p0, let's fix this by sending many.
-
-        // Actually let's just make sure they have enough messages.
-        for (int i=0; i<10; i++) {
+        // Publish 20 messages without key, round-robin guarantees 10 in p0, 10 in p1. highWatermark=10 for both.
+        for (int i = 0; i < 20; i++) 
+        {
              await topicStore.PublishAsync("t1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
+        }
+        // Publish 10 messages to t2. p0=5, p1=5. highWatermark=5.
+        for (int i = 0; i < 10; i++) 
+        {
              await topicStore.PublishAsync("t2", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
         }
+
+        var offsetStore = new InMemoryCommittedOffsetStore(topicStore);
         
+        // Commits to distinct combinations: (g1, t1, p0), (g2, t1, p0), (g1, t1, p1), (g1, t2, p0)
         await offsetStore.CommitOffsetAsync("g1", "t1", 0, 5);
         await offsetStore.CommitOffsetAsync("g2", "t1", 0, 3);
         await offsetStore.CommitOffsetAsync("g1", "t1", 1, 4);
@@ -120,6 +123,7 @@ public class InMemoryCommittedOffsetStoreTests
         var offsetStore = new InMemoryCommittedOffsetStore(topicStore);
         
         var tasks = new List<Task>();
+        // Committing 0 through 999. The highest valid value committed by this loop is 999.
         for (int i = 0; i < 1000; i++)
         {
             int offsetToCommit = i;
@@ -128,7 +132,8 @@ public class InMemoryCommittedOffsetStoreTests
             }));
         }
 
-        await Task.WhenAll(tasks);
+        // Bounded wait prevents hanging tests in case of deadlock (FIX-008)
+        await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(5));
 
         var finalValue = await offsetStore.GetCommittedOffsetAsync("g1", "t1", 0);
         finalValue.Should().Be(999);
