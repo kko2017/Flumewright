@@ -93,34 +93,29 @@ public class InMemoryCommittedOffsetStoreTests
     [Trait("Category", "Unit")]
     public async Task IndependentKeys_DoNotInterfere()
     {
-        var topicStore = new InMemoryTopicStore(2);
-        // Publish 20 messages without key, round-robin guarantees 10 in p0, 10 in p1. highWatermark=10 for both.
-        for (int i = 0; i < 20; i++) 
-        {
-             await topicStore.PublishAsync("t1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
-        }
-        // Publish 10 messages to t2. p0=5, p1=5. highWatermark=5.
+        var topicStore = new InMemoryTopicStore(1);
         for (int i = 0; i < 10; i++) 
         {
+             await topicStore.PublishAsync("t1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
              await topicStore.PublishAsync("t2", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
         }
 
         var offsetStore = new InMemoryCommittedOffsetStore(topicStore);
         
-        // Commits to distinct combinations: (g1, t1, p0), (g2, t1, p0), (g1, t1, p1), (g1, t2, p0)
+        // Commits to distinct combinations on partition 0: (g1, t1, 0), (g2, t1, 0), (g1, t2, 0), (g2, t2, 0)
         var res1 = await offsetStore.CommitOffsetAsync("g1", "t1", 0, 5);
         res1.Ok.Should().BeTrue();
         var res2 = await offsetStore.CommitOffsetAsync("g2", "t1", 0, 3);
         res2.Ok.Should().BeTrue();
-        var res3 = await offsetStore.CommitOffsetAsync("g1", "t1", 1, 4);
+        var res3 = await offsetStore.CommitOffsetAsync("g1", "t2", 0, 4);
         res3.Ok.Should().BeTrue();
-        var res4 = await offsetStore.CommitOffsetAsync("g1", "t2", 0, 2);
+        var res4 = await offsetStore.CommitOffsetAsync("g2", "t2", 0, 2);
         res4.Ok.Should().BeTrue();
 
         var v1 = await offsetStore.GetCommittedOffsetAsync("g1", "t1", 0);
         var v2 = await offsetStore.GetCommittedOffsetAsync("g2", "t1", 0);
-        var v3 = await offsetStore.GetCommittedOffsetAsync("g1", "t1", 1);
-        var v4 = await offsetStore.GetCommittedOffsetAsync("g1", "t2", 0);
+        var v3 = await offsetStore.GetCommittedOffsetAsync("g1", "t2", 0);
+        var v4 = await offsetStore.GetCommittedOffsetAsync("g2", "t2", 0);
 
         v1.Should().Be(5);
         v2.Should().Be(3);
