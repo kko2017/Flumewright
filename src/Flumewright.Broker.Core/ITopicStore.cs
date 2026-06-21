@@ -29,5 +29,5 @@ public interface ITopicStore
         long startOffset,
         CancellationToken ct = default);
 
-    long GetPartitionHighWatermark(string topic, int partition);
+    long? GetPartitionHighWatermark(string topic, int partition);
 }

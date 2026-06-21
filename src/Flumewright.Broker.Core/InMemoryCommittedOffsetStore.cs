@@ -29,7 +29,16 @@ public sealed class InMemoryCommittedOffsetStore : ICommittedOffsetStore
 
         lock (_lock)
         {
-            long highWatermark = _topicStore.GetPartitionHighWatermark(topic, partition);
+            // Reading the watermark MUST be inside the lock. If read before the lock, a message 
+            // could be published (increasing the watermark) before we acquire the lock, causing 
+            // a valid commit of the new watermark to be falsely rejected as out-of-range against 
+            // the stale read (a check-then-act race). This coarse global lock is intentional for Phase 1.
+            long? highWatermarkOpt = _topicStore.GetPartitionHighWatermark(topic, partition);
+            if (!highWatermarkOpt.HasValue)
+            {
+                return new ValueTask<(bool, string)>((false, "Unknown topic or invalid partition"));
+            }
+            long highWatermark = highWatermarkOpt.Value;
             
             // DEC-023: semantics (B) Kafka-style. Committed offset is the NEXT offset to read.
             // Valid range is [0, highWatermark]. Committing exactly highWatermark is valid 
