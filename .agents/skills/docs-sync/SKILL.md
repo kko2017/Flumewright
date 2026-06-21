@@ -23,6 +23,9 @@ instruction docs (04/05/07/NN-phaseX-*) are personal and NEVER committed.
 |-------------|-----------|
 | 01-execution-plan.en.md | docs/design/plan.md |
 | 11-concurrency-strategy.en.md | docs/design/concurrency-strategy.md |
+| 12-m3a-consumer-groups.en.md | docs/design/m3a-consumer-groups.md |
+| 13-m3b-redelivery-dlq.en.md | docs/design/m3b-redelivery-dlq.md |
+| 14-m3c-rebalance.en.md | docs/design/m3c-rebalance.md |
 | 02-study-notes.en.md | docs/learning/study-notes.md |
 | 03-version-control-guide.en.md | docs/guides/version-control-and-validation-guide.md |
 | 09-decision-and-fix-log.en.md | docs/decisions/decision-and-fix-log.md |
@@ -40,6 +43,9 @@ For each mapped pair, compare the root source to its docs/ copy and list only th
 for pair in \
   "01-execution-plan.en.md:docs/design/plan.md" \
   "11-concurrency-strategy.en.md:docs/design/concurrency-strategy.md" \
+  "12-m3a-consumer-groups.en.md:docs/design/m3a-consumer-groups.md" \
+  "13-m3b-redelivery-dlq.en.md:docs/design/m3b-redelivery-dlq.md" \
+  "14-m3c-rebalance.en.md:docs/design/m3c-rebalance.md" \
   "02-study-notes.en.md:docs/learning/study-notes.md" \
   "03-version-control-guide.en.md:docs/guides/version-control-and-validation-guide.md" \
   "09-decision-and-fix-log.en.md:docs/decisions/decision-and-fix-log.md" \
