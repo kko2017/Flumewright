@@ -10,3 +10,6 @@ insert_final_newline = true
 
 # Exception-swallowing prevention (FIX-010 class)
 dotnet_diagnostic.CA1031.severity = error
+
+# VSTHRD naming convention rule
+dotnet_diagnostic.VSTHRD200.severity = none

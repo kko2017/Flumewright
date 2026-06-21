@@ -202,7 +202,7 @@ public class InMemoryTopicStoreTests
         var read2 = enum2.MoveNextAsync().AsTask();
 
         // Cancel subscriber 1
-        cts1.Cancel();
+        await cts1.CancelAsync();
 
         // Ensure enum1 throws TaskCanceledException or returns false
         try
