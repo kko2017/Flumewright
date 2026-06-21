@@ -1,5 +1,4 @@
-using System;
-using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Flumewright.Broker.Core;
@@ -19,7 +18,7 @@ public sealed class InMemoryCommittedOffsetStore : ICommittedOffsetStore
         _topicStore = topicStore;
     }
 
-    public ValueTask<(bool Ok, string Reason)> CommitOffsetAsync(string groupId, string topic, int partition, long offset)
+    public ValueTask<(bool Ok, string Reason)> CommitOffsetAsync(string groupId, string topic, int partition, long offset, CancellationToken ct = default)
     {
         if (offset < 0)
         {
@@ -31,7 +30,11 @@ public sealed class InMemoryCommittedOffsetStore : ICommittedOffsetStore
         lock (_lock)
         {
             long highWatermark = _topicStore.GetPartitionHighWatermark(topic, partition);
-            if (offset >= highWatermark)
+            
+            // DEC-023: semantics (B) Kafka-style. Committed offset is the NEXT offset to read.
+            // Valid range is [0, highWatermark]. Committing exactly highWatermark is valid 
+            // ("all current records processed").
+            if (offset > highWatermark)
             {
                 return new ValueTask<(bool, string)>((false, "Offset out of range"));
             }
@@ -47,7 +50,7 @@ public sealed class InMemoryCommittedOffsetStore : ICommittedOffsetStore
         return new ValueTask<(bool, string)>((true, ""));
     }
 
-    public ValueTask<long?> GetCommittedOffsetAsync(string groupId, string topic, int partition)
+    public ValueTask<long?> GetCommittedOffsetAsync(string groupId, string topic, int partition, CancellationToken ct = default)
     {
         var key = (groupId, topic, partition);
         
