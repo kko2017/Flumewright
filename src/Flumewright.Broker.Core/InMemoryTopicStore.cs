@@ -223,4 +223,16 @@ public sealed class InMemoryTopicStore : ITopicStore
 
         return topicState.Partitions[partition].ReadFromOffsetAsync(startOffset, ct);
     }
+
+    public long GetPartitionHighWatermark(string topic, int partition)
+    {
+        if (_topics.TryGetValue(topic, out var topicState))
+        {
+            if (partition >= 0 && partition < topicState.Partitions.Length)
+            {
+                return topicState.Partitions[partition].MessageCount;
+            }
+        }
+        return 0;
+    }
 }
