@@ -344,6 +344,56 @@ Topic "orders" ──┤
   split the topic's partitions; at-least-once via **offset commit**. Built ON TOP OF M2, a separate milestone.
 - **Phase 2:** rebalancing maturity (dynamic reassignment), retention/eviction + disk persistence, replay.
 
+### The log model's core: two bookmarks and commit (Kafka-style) ⭐ Key concept 🔒
+This is the conceptual heart of the log/pull model — the thing that makes it different from a classic queue.
+
+**A classic queue has one bookmark.** You read a message, it's removed, you process it, you read the next.
+Read = remove. If you crash mid-processing, that message is gone (it left the queue). FIFO, one position.
+
+**The log model has two separate bookmarks**, and they can diverge:
+- **read offset** — "how far I've fetched." Held by the consumer, moves ahead.
+- **committed offset** — "how far I've *safely finished*." Stored by the broker, trails behind. This is the
+  source of truth for recovery.
+
+Committed offset ≤ read offset, always. The gap between them is exactly "messages that will be redelivered
+if I crash now."
+
+**Why two, not one — the real reason is failure recovery, not speed.** Reading a message and finishing it
+(e.g. writing to a DB) are separated in time, and the consumer can die in between. With one bookmark, the
+position advances on read, so a crash loses the in-flight message (at-most-once). With two, you **commit
+after processing** — a crash replays from the committed point, so unfinished work is redelivered
+(at-least-once). The two bookmarks are what make "process, then commit" possible.
+
+**Three independent separations the log model enables** (don't conflate them):
+1. **publish ↔ consume (async decoupling)** — the API gets an "accepted" response the moment the broker
+   appends to the log; actual processing happens later at the consumer's pace. (10M Instagram likes:
+   answer "liked!" instantly, persist to DB slowly; the log is the buffer so a slow DB never blocks the API.)
+2. **read ↔ commit (failure recovery)** — the two bookmarks above. *Reason: crashes, not speed.*
+3. **batch read (throughput)** — fetch many ahead, process one at a time; read naturally runs ahead of
+   commit. A bonus the two-bookmark split enables, not the reason for it.
+
+**Commit model (M3a):** processing-then-**manual**-**batch** commit. The consumer explicitly commits
+"finished up to offset N" after processing a batch; the broker stores it per `(group, topic, partition)`.
+Manual (not auto) because auto-commit tracks the *read* position and can lose in-flight work; manual commits
+only what's actually done. Batch (not per-message) for throughput — at the cost of a larger replay window on
+crash.
+
+**at-least-once + idempotency = effectively-once.** Batch commit means a crash replays the
+already-processed-but-not-committed messages → duplicates are inherent to at-least-once. The broker
+guarantees "uncommitted is redelivered"; the **consumer** absorbs duplicates by being idempotent. Two ways:
+- **upsert / overwrite** — the operation is naturally idempotent (`set like(user,post)=true`; `SET amount=500`).
+  Re-applying yields the same result. (This is the "same id overwrites" case.)
+- **dedup / reject** — the operation accumulates (`balance = balance + 100`), so overwriting won't help;
+  record each message's unique id and **skip** if already processed.
+Idempotency is the **consumer's** responsibility — the broker's contract is only at-least-once delivery.
+Together they give "effectively-once."
+
+**Consumer-group assignment rule (the heart of groups):** within one group, a partition is assigned to
+**exactly one member**. If two members read the same partition, the group double-processes and their commits
+collide. So one partition = one member; members split the partitions → load balancing. Consequence:
+**partition count caps consumer parallelism** (more members than partitions → some sit idle). In M3a this
+split is static (consumers declare which partitions); dynamic reassignment (rebalance) is M3c.
+
 ---
 
 ## 9. Payload Opacity (Key to Extensibility)
