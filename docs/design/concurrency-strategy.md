@@ -70,7 +70,7 @@ hazard has to pass through **all five** to reach `main`.
 |-------|-------------|---------|--------|
 | 1 | Code patterns (prevent at write time) | source discipline (locks, TCS, cancellation) | in place |
 | 2 | Human checkpoints + isolated AI reviewer | risk-based checkpoints (DEC-013), `code-review` skill (Gemini sub-agent) | in place |
-| 3 | Static analysis (mechanical, build/CI) | **Roslyn analyzers** (CA1031), **SonarCloud**, **CodeQL**; threading analyzers planned | in place; threading planned (M3) |
+| 3 | Static analysis (mechanical, build/CI) | **Roslyn analyzers** (CA1031, **VSTHRD threading**), **SonarCloud**, **CodeQL** | in place |
 | 4 | Concurrency tests (behavioral) | **xUnit** concurrency tests, flaky-test discipline | in place |
 | 5 | Systematic concurrency exploration | **Microsoft Coyote** | planned (after M3) |
 
@@ -87,12 +87,12 @@ Tooling: **risk-based checkpoints (DEC-013)** + the **`code-review` skill** (an 
 - **Checkpoints**: concurrency/shared-state steps are high-risk and stop for human verification, with explicit self-checks (atomic increments? isolated per-partition state? lost-wakeup-safe?).
 - **Reviewer sub-agent**: a separate, isolated agent inspects the diff with fresh eyes against a concurrency/exception/flaky-test checklist, tagging each finding fix / suppress / human-judgment. The author of code is biased toward its own work; an isolated reviewer is not.
 
-### Layer 3 — Static analysis (mechanical, at build/CI time) *— in place; threading analyzers planned*
-Three independent analyzers already run, plus one planned:
+### Layer 3 — Static analysis (mechanical, at build/CI time) *— in place*
+Four independent analyzers already run:
 - **Roslyn analyzer — CA1031 = error** *(in place)*: a broad `catch (Exception)` fails the build, so the swallowed-exception class of defect cannot return to production code (tests annotate the two legitimate marshaling sites). This is the build-time lock on FIX-010.
 - **SonarCloud** *(in place)*: the quality gate flags empty catches, code smells, and some vulnerabilities on every PR — this is the tool that first surfaced FIX-010.
 - **CodeQL** *(in place)*: security SAST (data-flow). More security than concurrency, but the same "mechanical detection" layer.
-- **Roslyn threading analyzers (VSTHRD)** *(planned, ~M3)*: unawaited `Task` / `async void` flagged at build, catching fire-and-forget mistakes that are a common source of concurrency bugs.
+- **Roslyn threading analyzers (VSTHRD)** *(in place)*: unawaited `Task` / `async void` / synchronous blocking on async flagged at build, catching fire-and-forget mistakes that are a common source of concurrency bugs. Applied to src + tests (DEC-021 stage 2); the first install was clean in src/ and caught one synchronous-cancel issue in tests (VSTHRD103).
 
 ### Layer 4 — Concurrency tests (behavioral) *— in place*
 Tooling: **xUnit** concurrency tests + flaky-test discipline.
@@ -139,5 +139,5 @@ the concurrency passages.
 
 ---
 
-*Layers 3 (threading analyzers) and 5 (Coyote) are partially planned — marked above — and will be filled in
-as the M3 concurrency work lands. The strategy itself is in force now.*
+*Layer 5 (Coyote) is still planned — marked above — and will be filled in after M3. Layer 3 is now fully in
+place (threading analyzers landed in DEC-021 stage 2). The strategy itself is in force now.*

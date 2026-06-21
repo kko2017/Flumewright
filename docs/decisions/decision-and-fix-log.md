@@ -785,8 +785,18 @@
     (background-task exceptions marshaled to the test thread via `TrySetException`) got a scoped
     `#pragma warning disable CA1031` + reason — NOT a whole-test-project exemption, which would let future
     genuinely-swallowing test catches through.
-  - **Step 2 (planned, ~M3 start):** Microsoft.VisualStudio.Threading analyzers (VSTHRD) — unawaited `Task`
-    / `async void` — staged like CA1031 (targeted, report hits, fix or annotate).
+  - **Step 2 (done, M3a start):** Microsoft.VisualStudio.Threading analyzers (VSTHRD) added to the root
+    `Directory.Build.props`, applied to **all** projects (src + tests) — test projects in scope on purpose,
+    since their concurrency correctness is what keeps the suite from going flaky. Version unpinned (latest
+    stable; Dependabot tracks nuget). Staged like CA1031 (targeted: report hits, then fix or annotate). At
+    install, src/ had **zero** VSTHRD diagnostics — the existing M1/M2 concurrency code was already clean;
+    all 16 hits were in tests/. Two rule decisions:
+    - **VSTHRD200 → `none` (global, in `.editorconfig`):** an "Async"-suffix *naming-convention* rule, not a
+      concurrency-correctness rule, and it conflicts with xUnit descriptive test naming. 15 hits, all tests/,
+      all naming-only.
+    - **VSTHRD103 → kept as error, code fixed:** one genuine finding — a synchronous `cts.Cancel()` in
+      `InMemoryTopicStoreTests.cs` replaced with `await cts.CancelAsync()` (.NET 8), which also makes that
+      test's cancellation-propagation timing more deterministic.
   - **Step 3 (planned, later):** raise `AnalysisMode` gradually and clear the resulting warnings (the
     analyzer version of soft→hard rollout).
 - **Rationale:** CA1031 is not "general catch is forbidden" — a boundary handler that logs and recovers is
