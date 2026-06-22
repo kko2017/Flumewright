@@ -13,6 +13,7 @@ builder.WebHost.ConfigureKestrel(options =>
 
 builder.Services.AddGrpc();
 builder.Services.AddSingleton<ITopicStore, InMemoryTopicStore>();
+builder.Services.AddSingleton<ICommittedOffsetStore, InMemoryCommittedOffsetStore>();
 
 var app = builder.Build();
 
