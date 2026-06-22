@@ -43,12 +43,41 @@ public class MessageBusService : MessageBus.MessageBusBase
 
     public override async Task Subscribe(SubscribeRequest request, IServerStreamWriter<DeliverEnvelope> responseStream, ServerCallContext context)
     {
+        if (string.IsNullOrEmpty(request.GroupId))
+        {
+            var messages = _topicStore.SubscribeAsync(request.Topic, context.CancellationToken);
+
+            await foreach (var message in messages.WithCancellation(context.CancellationToken))
+            {
+                var envelope = new DeliverEnvelope
+                {
+                    Topic = request.Topic,
+                    Offset = message.Offset,
+                    Partition = message.Partition,
+                    Payload = ByteString.CopyFrom(message.Payload.Span)
+                };
+
+                foreach (var header in message.Headers)
+                {
+                    envelope.Headers[header.Key] = header.Value;
+                }
+
+                await responseStream.WriteAsync(envelope, context.CancellationToken);
+            }
+            return;
+        }
+
         if (request.Partitions.Count == 0)
         {
-            // Fallback for M1/M2 behavior if needed, or we just return.
-            // The instruction says "Subscribe must respect the consumer's declared `partitions` (static assignment) — stream only those partitions, not all of them. (This is the M3a change from M2's "read all partitions".)"
-            // Let's assume the request always provides partitions now. If empty, stream nothing.
-            return;
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "Group subscribe requires explicit partitions."));
+        }
+
+        foreach (var p in request.Partitions)
+        {
+            if (_topicStore.GetPartitionHighWatermark(request.Topic, p) == null)
+            {
+                throw new RpcException(new Status(StatusCode.InvalidArgument, $"Unknown topic or invalid partition: {request.Topic}:{p}"));
+            }
         }
 
         var channel = System.Threading.Channels.Channel.CreateUnbounded<StoredMessage>(new System.Threading.Channels.UnboundedChannelOptions
@@ -75,15 +104,7 @@ public class MessageBusService : MessageBus.MessageBusBase
                     }
                     else
                     {
-                        startOffset = request.Reset == OffsetReset.Earliest ? 0 : -1; // -1 matches M2's "from now"
-                    }
-
-                    // For LATEST (-1), ReadPartitionAsync natively might not handle -1 like SubscribeAsync does.
-                    // Wait, let's look at ReadPartitionAsync. Oh, SubscribeAsync handles -1 before calling ReadFromOffsetAsync!
-                    if (startOffset < 0)
-                    {
-                        var hw = _topicStore.GetPartitionHighWatermark(request.Topic, partition);
-                        startOffset = hw ?? 0;
+                        startOffset = request.Reset == OffsetReset.Earliest ? 0 : -1; // -1 atomically resolves to LATEST in the store
                     }
 
                     await foreach (var msg in _topicStore.ReadPartitionAsync(request.Topic, partition, startOffset, context.CancellationToken))

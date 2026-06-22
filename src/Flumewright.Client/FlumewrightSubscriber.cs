@@ -72,7 +72,7 @@ public sealed class FlumewrightSubscriber: IDisposable
         var ack = await _client.CommitOffsetAsync(req, cancellationToken: ct);
         if (!ack.Ok)
         {
-            throw new Exception($"Commit failed: {ack.Reason}");
+            throw new CommitRejectedException(ack.Reason);
         }
     }
 

@@ -23,6 +23,10 @@ public interface ITopicStore
         long startOffset,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// Reads a specific partition starting from <paramref name="startOffset"/>.
+    /// If <paramref name="startOffset"/> is negative, it resolves atomically to the current high watermark (LATEST).
+    /// </summary>
     IAsyncEnumerable<StoredMessage> ReadPartitionAsync(
         string topic,
         int partition,

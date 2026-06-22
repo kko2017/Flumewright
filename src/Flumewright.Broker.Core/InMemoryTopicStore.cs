@@ -46,6 +46,8 @@ public sealed class InMemoryTopicStore : ITopicStore
             [EnumeratorCancellation] CancellationToken ct = default)
         {
             long currentOffset = startOffset;
+            bool offsetResolved = startOffset >= 0;
+
             while (!ct.IsCancellationRequested)
             {
                 StoredMessage? msg = null;
@@ -53,6 +55,12 @@ public sealed class InMemoryTopicStore : ITopicStore
 
                 lock (_lock)
                 {
+                    if (!offsetResolved)
+                    {
+                        currentOffset = _messages.Count;
+                        offsetResolved = true;
+                    }
+
                     if (currentOffset < _messages.Count)
                     {
                         msg = _messages[(int)currentOffset];
@@ -175,10 +183,6 @@ public sealed class InMemoryTopicStore : ITopicStore
             var partition = topicState.Partitions[partitionIndex];
 
             long initialOffset = startOffset;
-            if (initialOffset < 0)
-            {
-                initialOffset = partition.MessageCount;
-            }
 
             var task = Task.Run(async () =>
             {

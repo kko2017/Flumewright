@@ -41,6 +41,7 @@ public class InMemoryTopicStoreTests
         var enumerator = store.SubscribeAsync("topic1", cts.Token).GetAsyncEnumerator(cts.Token);
         var pendingRead = enumerator.MoveNextAsync().AsTask();
 
+        await Task.Delay(50);
         await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
 
         var hasNext = await pendingRead;
@@ -68,6 +69,10 @@ public class InMemoryTopicStoreTests
         var enumerator = store.SubscribeAsync("topic1", cts.Token).GetAsyncEnumerator(cts.Token);
         var pendingRead = enumerator.MoveNextAsync().AsTask();
 
+        // Give the background reader tasks a moment to initialize and resolve LATEST
+        // before we publish the message we want them to catch.
+        await Task.Delay(50);
+
         // Publish offset 1
         await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
 
@@ -90,6 +95,7 @@ public class InMemoryTopicStoreTests
         var enumerator = store.SubscribeAsync("topic1", cts.Token).GetAsyncEnumerator(cts.Token);
         var pendingRead = enumerator.MoveNextAsync().AsTask();
 
+        await Task.Delay(50);
         await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
 
         await pendingRead;
@@ -108,6 +114,7 @@ public class InMemoryTopicStoreTests
         var enumeratorA = store.SubscribeAsync("A", cts.Token).GetAsyncEnumerator(cts.Token);
         var pendingReadA = enumeratorA.MoveNextAsync().AsTask();
 
+        await Task.Delay(50);
         await store.PublishAsync("B", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
 
         var delayTask = Task.Delay(50);
@@ -151,6 +158,7 @@ public class InMemoryTopicStoreTests
         var read1 = enum1.MoveNextAsync().AsTask();
         var read2 = enum2.MoveNextAsync().AsTask();
 
+        await Task.Delay(50);
         await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), new byte[] { 42 }.AsMemory());
 
         var hasNext1 = await read1;
@@ -177,6 +185,7 @@ public class InMemoryTopicStoreTests
         var enum1 = store.SubscribeAsync("topic1", cts.Token).GetAsyncEnumerator(cts.Token);
         var read1 = enum1.MoveNextAsync().AsTask();
 
+        await Task.Delay(50);
         await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), new byte[] { 2 }.AsMemory());
 
         var hasNext1 = await read1;
@@ -200,6 +209,8 @@ public class InMemoryTopicStoreTests
         
         var read1 = enum1.MoveNextAsync().AsTask();
         var read2 = enum2.MoveNextAsync().AsTask();
+
+        await Task.Delay(50);
 
         // Cancel subscriber 1
         await cts1.CancelAsync();
