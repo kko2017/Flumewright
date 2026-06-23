@@ -88,6 +88,10 @@ public sealed class ConsumerGroupE2ETests : IClassFixture<BrokerAppFactory>
         }
 
         receivedFirst.Count.Should().Be(4);
+        receivedFirst[0].Offset.Should().Be(0);
+        receivedFirst[1].Offset.Should().Be(1);
+        receivedFirst[2].Offset.Should().Be(2);
+        receivedFirst[3].Offset.Should().Be(3);
 
         await subscriber1.CommitOffsetAsync(groupId, topic, partition, 2, cts.Token);
 
@@ -142,6 +146,7 @@ public sealed class ConsumerGroupE2ETests : IClassFixture<BrokerAppFactory>
 
         receivedSecond.Count.Should().Be(2);
         receivedSecond[0].Offset.Should().Be(3);
+        receivedSecond[1].Offset.Should().Be(4);
     }
 
     [Fact]
@@ -175,6 +180,8 @@ public sealed class ConsumerGroupE2ETests : IClassFixture<BrokerAppFactory>
 
         receivedEarliest.Count.Should().Be(3);
         receivedEarliest[0].Offset.Should().Be(0);
+        receivedEarliest[1].Offset.Should().Be(1);
+        receivedEarliest[2].Offset.Should().Be(2);
 
         using var subLatest = new FlumewrightSubscriber(address);
         
@@ -203,7 +210,7 @@ public sealed class ConsumerGroupE2ETests : IClassFixture<BrokerAppFactory>
                     }
                 }
             }
-#pragma warning disable CA1031
+#pragma warning disable CA1031 // Reason: marshaling background exception to the test thread
             catch (Exception ex)
             {
                 syncReceived.TrySetException(ex);
@@ -232,5 +239,7 @@ public sealed class ConsumerGroupE2ETests : IClassFixture<BrokerAppFactory>
             receivedLatest[0].Offset.Should().Be(ackLatest.Offset);
             receivedLatest[0].Offset.Should().BeGreaterThan(2);
         }
+
+        await pump;
     }
 }
