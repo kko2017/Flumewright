@@ -41,11 +41,23 @@ public sealed class InMemoryTopicStore : ITopicStore
             return (Index, offset);
         }
 
+        public long ResolveStartOffset(long startOffset)
+        {
+            if (startOffset >= 0)
+                return startOffset;
+
+            lock (_lock)
+            {
+                return _messages.Count;
+            }
+        }
+
         public async IAsyncEnumerable<StoredMessage> ReadFromOffsetAsync(
             long startOffset,
             [EnumeratorCancellation] CancellationToken ct = default)
         {
             long currentOffset = startOffset;
+
             while (!ct.IsCancellationRequested)
             {
                 StoredMessage? msg = null;
@@ -154,12 +166,50 @@ public sealed class InMemoryTopicStore : ITopicStore
         return SubscribeAsync(topic, -1, ct);
     }
 
-    public async IAsyncEnumerable<StoredMessage> SubscribeAsync(
+    public IAsyncEnumerable<StoredMessage> SubscribeAsync(
         string topic,
         long startOffset,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        CancellationToken ct = default)
     {
         var topicState = _topics.GetOrAdd(topic, _ => new Topic(_defaultPartitionCount));
+        var offsets = new Dictionary<int, long>();
+        for (int i = 0; i < topicState.Partitions.Length; i++)
+        {
+            offsets[i] = startOffset;
+        }
+        return ReadPartitionsAsync(topic, offsets, ct);
+    }
+
+    public IAsyncEnumerable<StoredMessage> ReadPartitionsAsync(
+        string topic,
+        IReadOnlyDictionary<int, long> partitionOffsets,
+        CancellationToken ct = default)
+    {
+        var topicState = _topics.GetOrAdd(topic, _ => new Topic(_defaultPartitionCount));
+
+        foreach (var p in partitionOffsets.Keys)
+        {
+            if (p < 0 || p >= topicState.Partitions.Length)
+            {
+                throw new ArgumentOutOfRangeException(nameof(partitionOffsets), $"Partition must be between 0 and {topicState.Partitions.Length - 1}");
+            }
+        }
+
+        var resolvedOffsets = new Dictionary<int, long>();
+        foreach (var kvp in partitionOffsets)
+        {
+            resolvedOffsets[kvp.Key] = topicState.Partitions[kvp.Key].ResolveStartOffset(kvp.Value);
+        }
+
+        return CoreReadPartitionsAsync(topicState, resolvedOffsets, ct);
+    }
+
+    private static async IAsyncEnumerable<StoredMessage> CoreReadPartitionsAsync(
+        Topic topicState,
+        Dictionary<int, long> resolvedOffsets,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
         var channel = Channel.CreateUnbounded<StoredMessage>(new UnboundedChannelOptions
         {
@@ -169,24 +219,19 @@ public sealed class InMemoryTopicStore : ITopicStore
 
         var partitionTasks = new List<Task>();
 
-        for (int i = 0; i < topicState.Partitions.Length; i++)
+        foreach (var kvp in resolvedOffsets)
         {
-            int partitionIndex = i;
+            int partitionIndex = kvp.Key;
+            long resolvedOffset = kvp.Value;
             var partition = topicState.Partitions[partitionIndex];
-
-            long initialOffset = startOffset;
-            if (initialOffset < 0)
-            {
-                initialOffset = partition.MessageCount;
-            }
 
             var task = Task.Run(async () =>
             {
                 try
                 {
-                    await foreach (var msg in partition.ReadFromOffsetAsync(initialOffset, ct))
+                    await foreach (var msg in partition.ReadFromOffsetAsync(resolvedOffset, linkedCts.Token))
                     {
-                        await channel.Writer.WriteAsync(msg, ct);
+                        await channel.Writer.WriteAsync(msg, linkedCts.Token);
                     }
                 }
                 catch (OperationCanceledException)
@@ -200,12 +245,19 @@ public sealed class InMemoryTopicStore : ITopicStore
 
         _ = Task.WhenAll(partitionTasks).ContinueWith(t => channel.Writer.TryComplete(t.Exception), TaskScheduler.Default);
 
-        while (await channel.Reader.WaitToReadAsync(ct))
+        try
         {
-            while (channel.Reader.TryRead(out var msg))
+            while (await channel.Reader.WaitToReadAsync(linkedCts.Token))
             {
-                yield return msg;
+                while (channel.Reader.TryRead(out var msg))
+                {
+                    yield return msg;
+                }
             }
+        }
+        finally
+        {
+            await linkedCts.CancelAsync();
         }
     }
 
@@ -221,6 +273,18 @@ public sealed class InMemoryTopicStore : ITopicStore
             throw new ArgumentOutOfRangeException(nameof(partition), $"Partition must be between 0 and {topicState.Partitions.Length - 1}");
         }
 
-        return topicState.Partitions[partition].ReadFromOffsetAsync(startOffset, ct);
+        var p = topicState.Partitions[partition];
+        long resolvedOffset = p.ResolveStartOffset(startOffset);
+
+        return p.ReadFromOffsetAsync(resolvedOffset, ct);
+    }
+
+    public long? GetPartitionHighWatermark(string topic, int partition)
+    {
+        if (_topics.TryGetValue(topic, out var topicState) && partition >= 0 && partition < topicState.Partitions.Length)
+        {
+            return topicState.Partitions[partition].MessageCount;
+        }
+        return null;
     }
 }

@@ -29,6 +29,8 @@ public sealed class BrokerAppFactory : IAsyncLifetime
         builder.Services.AddGrpc();
         builder.Services.AddSingleton<Flumewright.Broker.Core.ITopicStore,
                                       Flumewright.Broker.Core.InMemoryTopicStore>();
+        builder.Services.AddSingleton<Flumewright.Broker.Core.ICommittedOffsetStore,
+                                      Flumewright.Broker.Core.InMemoryCommittedOffsetStore>();
 
         _app = builder.Build();
         _app.MapGrpcService<Flumewright.Broker.Services.MessageBusService>();

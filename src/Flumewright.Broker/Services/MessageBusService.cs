@@ -8,10 +8,12 @@ namespace Flumewright.Broker.Services;
 public class MessageBusService : MessageBus.MessageBusBase
 {
     private readonly ITopicStore _topicStore;
+    private readonly ICommittedOffsetStore _offsetStore;
 
-    public MessageBusService(ITopicStore topicStore)
+    public MessageBusService(ITopicStore topicStore, ICommittedOffsetStore offsetStore)
     {
         _topicStore = topicStore;
+        _offsetStore = offsetStore;
     }
 
     public override async Task<PublishAck> Publish(PublishEnvelope request, ServerCallContext context)
@@ -41,13 +43,56 @@ public class MessageBusService : MessageBus.MessageBusBase
 
     public override async Task Subscribe(SubscribeRequest request, IServerStreamWriter<DeliverEnvelope> responseStream, ServerCallContext context)
     {
-        var messages = _topicStore.SubscribeAsync(request.Topic, context.CancellationToken);
+        if (string.IsNullOrEmpty(request.GroupId))
+        {
+            var messages = _topicStore.SubscribeAsync(request.Topic, context.CancellationToken);
+            await StreamToClientAsync(messages, responseStream, request.Topic, context.CancellationToken);
+            return;
+        }
 
-        await foreach (var message in messages.WithCancellation(context.CancellationToken))
+        if (request.Partitions.Count == 0)
+        {
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "Group subscribe requires explicit partitions."));
+        }
+
+        foreach (var p in request.Partitions)   // NOSONAR imperative validation-then-throw is clearer than a LINQ filter here
+        {
+            if (_topicStore.GetPartitionHighWatermark(request.Topic, p) == null)
+            {
+                throw new RpcException(new Status(StatusCode.InvalidArgument, $"Unknown topic or invalid partition: {request.Topic}:{p}"));
+            }
+        }
+
+        var partitionOffsets = await BuildPartitionOffsetsAsync(request, context.CancellationToken);
+        var partitionMessages = _topicStore.ReadPartitionsAsync(request.Topic, partitionOffsets, context.CancellationToken);
+        await StreamToClientAsync(partitionMessages, responseStream, request.Topic, context.CancellationToken);
+    }
+
+    private async Task<Dictionary<int, long>> BuildPartitionOffsetsAsync(SubscribeRequest request, CancellationToken ct)
+    {
+        var partitionOffsets = new Dictionary<int, long>();
+        foreach (var p in request.Partitions)
+        {
+            var committed = await _offsetStore.GetCommittedOffsetAsync(request.GroupId, request.Topic, p, ct);
+            if (committed.HasValue)
+            {
+                partitionOffsets[p] = committed.Value; // DEC-023: committed is the next offset to read
+            }
+            else
+            {
+                partitionOffsets[p] = request.Reset == OffsetReset.Earliest ? 0 : -1; // -1 atomically resolves to LATEST in the store
+            }
+        }
+        return partitionOffsets;
+    }
+
+    private static async Task StreamToClientAsync(IAsyncEnumerable<StoredMessage> source, IServerStreamWriter<DeliverEnvelope> responseStream, string topic, CancellationToken ct)
+    {
+        await foreach (var message in source.WithCancellation(ct))
         {
             var envelope = new DeliverEnvelope
             {
-                Topic = request.Topic,
+                Topic = topic,
                 Offset = message.Offset,
                 Partition = message.Partition,
                 Payload = ByteString.CopyFrom(message.Payload.Span)
@@ -58,7 +103,19 @@ public class MessageBusService : MessageBus.MessageBusBase
                 envelope.Headers[header.Key] = header.Value;
             }
 
-            await responseStream.WriteAsync(envelope, context.CancellationToken);
+            await responseStream.WriteAsync(envelope, ct);
         }
+    }
+
+    public override async Task<CommitAck> CommitOffset(CommitRequest request, ServerCallContext context)
+    {
+        var (ok, reason) = await _offsetStore.CommitOffsetAsync(
+            request.GroupId, request.Topic, request.Partition, request.Offset, context.CancellationToken);
+
+        return new CommitAck
+        {
+            Ok = ok,
+            Reason = reason ?? string.Empty
+        };
     }
 }
