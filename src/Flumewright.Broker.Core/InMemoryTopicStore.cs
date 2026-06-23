@@ -209,6 +209,8 @@ public sealed class InMemoryTopicStore : ITopicStore
         Dictionary<int, long> resolvedOffsets,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+
         var channel = Channel.CreateUnbounded<StoredMessage>(new UnboundedChannelOptions
         {
             SingleWriter = false,
@@ -227,9 +229,9 @@ public sealed class InMemoryTopicStore : ITopicStore
             {
                 try
                 {
-                    await foreach (var msg in partition.ReadFromOffsetAsync(resolvedOffset, ct))
+                    await foreach (var msg in partition.ReadFromOffsetAsync(resolvedOffset, linkedCts.Token))
                     {
-                        await channel.Writer.WriteAsync(msg, ct);
+                        await channel.Writer.WriteAsync(msg, linkedCts.Token);
                     }
                 }
                 catch (OperationCanceledException)
@@ -243,12 +245,19 @@ public sealed class InMemoryTopicStore : ITopicStore
 
         _ = Task.WhenAll(partitionTasks).ContinueWith(t => channel.Writer.TryComplete(t.Exception), TaskScheduler.Default);
 
-        while (await channel.Reader.WaitToReadAsync(ct))
+        try
         {
-            while (channel.Reader.TryRead(out var msg))
+            while (await channel.Reader.WaitToReadAsync(linkedCts.Token))
             {
-                yield return msg;
+                while (channel.Reader.TryRead(out var msg))
+                {
+                    yield return msg;
+                }
             }
+        }
+        finally
+        {
+            await linkedCts.CancelAsync();
         }
     }
 
