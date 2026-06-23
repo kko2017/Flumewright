@@ -33,5 +33,10 @@ public interface ITopicStore
         long startOffset,
         CancellationToken ct = default);
 
+    IAsyncEnumerable<StoredMessage> ReadPartitionsAsync(
+        string topic,
+        IReadOnlyDictionary<int, long> partitionOffsets,
+        CancellationToken ct = default);
+
     long? GetPartitionHighWatermark(string topic, int partition);
 }
