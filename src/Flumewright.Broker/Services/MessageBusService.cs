@@ -46,24 +46,7 @@ public class MessageBusService : MessageBus.MessageBusBase
         if (string.IsNullOrEmpty(request.GroupId))
         {
             var messages = _topicStore.SubscribeAsync(request.Topic, context.CancellationToken);
-
-            await foreach (var message in messages.WithCancellation(context.CancellationToken))
-            {
-                var envelope = new DeliverEnvelope
-                {
-                    Topic = request.Topic,
-                    Offset = message.Offset,
-                    Partition = message.Partition,
-                    Payload = ByteString.CopyFrom(message.Payload.Span)
-                };
-
-                foreach (var header in message.Headers)
-                {
-                    envelope.Headers[header.Key] = header.Value;
-                }
-
-                await responseStream.WriteAsync(envelope, context.CancellationToken);
-            }
+            await StreamToClientAsync(messages, responseStream, request.Topic, context.CancellationToken);
             return;
         }
 
@@ -72,6 +55,7 @@ public class MessageBusService : MessageBus.MessageBusBase
             throw new RpcException(new Status(StatusCode.InvalidArgument, "Group subscribe requires explicit partitions."));
         }
 
+        // NOSONAR imperative validation-then-throw is clearer than a LINQ filter here
         foreach (var p in request.Partitions)
         {
             if (_topicStore.GetPartitionHighWatermark(request.Topic, p) == null)
@@ -80,11 +64,17 @@ public class MessageBusService : MessageBus.MessageBusBase
             }
         }
 
-        var partitionOffsets = new Dictionary<int, long>();
+        var partitionOffsets = await BuildPartitionOffsetsAsync(request, context.CancellationToken);
+        var partitionMessages = _topicStore.ReadPartitionsAsync(request.Topic, partitionOffsets, context.CancellationToken);
+        await StreamToClientAsync(partitionMessages, responseStream, request.Topic, context.CancellationToken);
+    }
 
+    private async Task<Dictionary<int, long>> BuildPartitionOffsetsAsync(SubscribeRequest request, CancellationToken ct)
+    {
+        var partitionOffsets = new Dictionary<int, long>();
         foreach (var p in request.Partitions)
         {
-            var committed = await _offsetStore.GetCommittedOffsetAsync(request.GroupId, request.Topic, p, context.CancellationToken);
+            var committed = await _offsetStore.GetCommittedOffsetAsync(request.GroupId, request.Topic, p, ct);
             if (committed.HasValue)
             {
                 partitionOffsets[p] = committed.Value; // DEC-023: committed is the next offset to read
@@ -94,14 +84,16 @@ public class MessageBusService : MessageBus.MessageBusBase
                 partitionOffsets[p] = request.Reset == OffsetReset.Earliest ? 0 : -1; // -1 atomically resolves to LATEST in the store
             }
         }
+        return partitionOffsets;
+    }
 
-        var partitionMessages = _topicStore.ReadPartitionsAsync(request.Topic, partitionOffsets, context.CancellationToken);
-
-        await foreach (var message in partitionMessages.WithCancellation(context.CancellationToken))
+    private static async Task StreamToClientAsync(IAsyncEnumerable<StoredMessage> source, IServerStreamWriter<DeliverEnvelope> responseStream, string topic, CancellationToken ct)
+    {
+        await foreach (var message in source.WithCancellation(ct))
         {
             var envelope = new DeliverEnvelope
             {
-                Topic = request.Topic,
+                Topic = topic,
                 Offset = message.Offset,
                 Partition = message.Partition,
                 Payload = ByteString.CopyFrom(message.Payload.Span)
@@ -112,7 +104,7 @@ public class MessageBusService : MessageBus.MessageBusBase
                 envelope.Headers[header.Key] = header.Value;
             }
 
-            await responseStream.WriteAsync(envelope, context.CancellationToken);
+            await responseStream.WriteAsync(envelope, ct);
         }
     }
 

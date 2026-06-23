@@ -204,7 +204,7 @@ public sealed class InMemoryTopicStore : ITopicStore
         return CoreReadPartitionsAsync(topicState, resolvedOffsets, ct);
     }
 
-    private async IAsyncEnumerable<StoredMessage> CoreReadPartitionsAsync(
+    private static async IAsyncEnumerable<StoredMessage> CoreReadPartitionsAsync(
         Topic topicState,
         Dictionary<int, long> resolvedOffsets,
         [EnumeratorCancellation] CancellationToken ct = default)
@@ -281,12 +281,9 @@ public sealed class InMemoryTopicStore : ITopicStore
 
     public long? GetPartitionHighWatermark(string topic, int partition)
     {
-        if (_topics.TryGetValue(topic, out var topicState))
+        if (_topics.TryGetValue(topic, out var topicState) && partition >= 0 && partition < topicState.Partitions.Length)
         {
-            if (partition >= 0 && partition < topicState.Partitions.Length)
-            {
-                return topicState.Partitions[partition].MessageCount;
-            }
+            return topicState.Partitions[partition].MessageCount;
         }
         return null;
     }
