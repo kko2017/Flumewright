@@ -80,68 +80,39 @@ public class MessageBusService : MessageBus.MessageBusBase
             }
         }
 
-        var channel = System.Threading.Channels.Channel.CreateUnbounded<StoredMessage>(new System.Threading.Channels.UnboundedChannelOptions
-        {
-            SingleWriter = false,
-            SingleReader = true
-        });
-
-        var partitionTasks = new List<Task>();
+        var partitionOffsets = new Dictionary<int, long>();
 
         foreach (var p in request.Partitions)
         {
-            int partition = p;
-            var task = Task.Run(async () =>
+            var committed = await _offsetStore.GetCommittedOffsetAsync(request.GroupId, request.Topic, p, context.CancellationToken);
+            if (committed.HasValue)
             {
-                try
-                {
-                    long startOffset;
-                    var committed = await _offsetStore.GetCommittedOffsetAsync(request.GroupId, request.Topic, partition, context.CancellationToken);
-                    
-                    if (committed.HasValue)
-                    {
-                        startOffset = committed.Value; // DEC-023: committed is the next offset to read
-                    }
-                    else
-                    {
-                        startOffset = request.Reset == OffsetReset.Earliest ? 0 : -1; // -1 atomically resolves to LATEST in the store
-                    }
-
-                    await foreach (var msg in _topicStore.ReadPartitionAsync(request.Topic, partition, startOffset, context.CancellationToken))
-                    {
-                        await channel.Writer.WriteAsync(msg, context.CancellationToken);
-                    }
-                }
-                catch (OperationCanceledException)
-                {
-                    // Cancellation is normal shutdown behavior for this partition reader task.
-                }
-            }, CancellationToken.None);
-
-            partitionTasks.Add(task);
+                partitionOffsets[p] = committed.Value; // DEC-023: committed is the next offset to read
+            }
+            else
+            {
+                partitionOffsets[p] = request.Reset == OffsetReset.Earliest ? 0 : -1; // -1 atomically resolves to LATEST in the store
+            }
         }
 
-        _ = Task.WhenAll(partitionTasks).ContinueWith(t => channel.Writer.TryComplete(t.Exception), TaskScheduler.Default);
+        var partitionMessages = _topicStore.ReadPartitionsAsync(request.Topic, partitionOffsets, context.CancellationToken);
 
-        while (await channel.Reader.WaitToReadAsync(context.CancellationToken))
+        await foreach (var message in partitionMessages.WithCancellation(context.CancellationToken))
         {
-            while (channel.Reader.TryRead(out var message))
+            var envelope = new DeliverEnvelope
             {
-                var envelope = new DeliverEnvelope
-                {
-                    Topic = request.Topic,
-                    Offset = message.Offset,
-                    Partition = message.Partition,
-                    Payload = ByteString.CopyFrom(message.Payload.Span)
-                };
+                Topic = request.Topic,
+                Offset = message.Offset,
+                Partition = message.Partition,
+                Payload = ByteString.CopyFrom(message.Payload.Span)
+            };
 
-                foreach (var header in message.Headers)
-                {
-                    envelope.Headers[header.Key] = header.Value;
-                }
-
-                await responseStream.WriteAsync(envelope, context.CancellationToken);
+            foreach (var header in message.Headers)
+            {
+                envelope.Headers[header.Key] = header.Value;
             }
+
+            await responseStream.WriteAsync(envelope, context.CancellationToken);
         }
     }
 
