@@ -41,7 +41,7 @@ public class InMemoryTopicStoreTests
         var enumerator = store.SubscribeAsync("topic1", cts.Token).GetAsyncEnumerator(cts.Token);
         var pendingRead = enumerator.MoveNextAsync().AsTask();
 
-        await Task.Delay(50);
+        
         await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
 
         var hasNext = await pendingRead;
@@ -71,7 +71,7 @@ public class InMemoryTopicStoreTests
 
         // Give the background reader tasks a moment to initialize and resolve LATEST
         // before we publish the message we want them to catch.
-        await Task.Delay(50);
+        
 
         // Publish offset 1
         await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
@@ -95,7 +95,7 @@ public class InMemoryTopicStoreTests
         var enumerator = store.SubscribeAsync("topic1", cts.Token).GetAsyncEnumerator(cts.Token);
         var pendingRead = enumerator.MoveNextAsync().AsTask();
 
-        await Task.Delay(50);
+        
         await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
 
         await pendingRead;
@@ -114,7 +114,7 @@ public class InMemoryTopicStoreTests
         var enumeratorA = store.SubscribeAsync("A", cts.Token).GetAsyncEnumerator(cts.Token);
         var pendingReadA = enumeratorA.MoveNextAsync().AsTask();
 
-        await Task.Delay(50);
+        
         await store.PublishAsync("B", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
 
         var delayTask = Task.Delay(50);
@@ -158,7 +158,7 @@ public class InMemoryTopicStoreTests
         var read1 = enum1.MoveNextAsync().AsTask();
         var read2 = enum2.MoveNextAsync().AsTask();
 
-        await Task.Delay(50);
+        
         await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), new byte[] { 42 }.AsMemory());
 
         var hasNext1 = await read1;
@@ -185,7 +185,7 @@ public class InMemoryTopicStoreTests
         var enum1 = store.SubscribeAsync("topic1", cts.Token).GetAsyncEnumerator(cts.Token);
         var read1 = enum1.MoveNextAsync().AsTask();
 
-        await Task.Delay(50);
+        
         await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), new byte[] { 2 }.AsMemory());
 
         var hasNext1 = await read1;
@@ -210,7 +210,7 @@ public class InMemoryTopicStoreTests
         var read1 = enum1.MoveNextAsync().AsTask();
         var read2 = enum2.MoveNextAsync().AsTask();
 
-        await Task.Delay(50);
+        
 
         // Cancel subscriber 1
         await cts1.CancelAsync();
@@ -408,5 +408,34 @@ public class InMemoryTopicStoreTests
             (ex is AggregateException agg && agg.InnerExceptions.Any(ie => ie is NullReferenceException));
             
         isExpected.Should().BeTrue();
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task Subscribe_Latest_Atomicity_SynchronousAtEntry_DoesNotMissPostReturnPublishes()
+    {
+        var store = new InMemoryTopicStore(1);
+        var headers = new Dictionary<string, string>();
+        var payload = ReadOnlyMemory<byte>.Empty;
+
+        using var cts = new CancellationTokenSource();
+        
+        // Act: subscribe returns. Because LATEST is resolved synchronously at entry,
+        // the offset is already pinned.
+        var enumerable = store.SubscribeAsync("topic1", cts.Token);
+        
+        // Publish a message AFTER Subscribe returned.
+        await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
+        
+        // Now begin reading.
+        var enumerator = enumerable.GetAsyncEnumerator(cts.Token);
+        var pendingRead = enumerator.MoveNextAsync().AsTask();
+        
+        var completed = await Task.WhenAny(pendingRead, Task.Delay(1000));
+        completed.Should().Be(pendingRead, "The subscriber should have caught the message published after subscribe returned");
+        
+        var hasNext = await pendingRead;
+        hasNext.Should().BeTrue();
+        enumerator.Current.Offset.Should().Be(0);
     }
 }
