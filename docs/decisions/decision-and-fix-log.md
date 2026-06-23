@@ -34,6 +34,7 @@
 - [DEC-020 — Reviewer sub-agents: function-based and on-call, not domain-based and standing 🔒](#dec-020--reviewer-sub-agents-function-based-and-on-call-not-domain-based-and-standing-)
 - [DEC-021 — Strengthen Roslyn analyzers to block FIX-010-class defects at build time 🔒](#dec-021--strengthen-roslyn-analyzers-to-block-fix-010-class-defects-at-build-time-)
 - [DEC-022 — A dedicated Concurrency Strategy doc (11), 🔒 cross-reference markers, and a reminder rule 🔒](#dec-022--a-dedicated-concurrency-strategy-doc-11--cross-reference-markers-and-a-reminder-rule-)
+- [DEC-023 — Offset commit semantics: committed = next offset to read (Kafka-style) 🔒](#dec-023--offset-commit-semantics-committed--next-offset-to-read-kafka-style-)
 
 ### Fixes (FIX)
 - [FIX-001 — Fan-out broken: a shared per-topic channel delivered to only one subscriber](#fix-001--fan-out-broken-a-shared-per-topic-channel-delivered-to-only-one-subscriber)
@@ -46,6 +47,9 @@
 - [FIX-008 — Integration test could hang instead of failing on timeout 🔒](#fix-008--integration-test-could-hang-instead-of-failing-on-timeout-)
 - [FIX-009 — Checkpoint A caught a LATEST-semantics bug in the channel store (became the trigger for DEC-015) 🔒](#fix-009--checkpoint-a-caught-a-latest-semantics-bug-in-the-channel-store-became-the-trigger-for-dec-015-)
 - [FIX-010 — Empty `catch (Exception)` in SubscribeAsync silently swallowed partition-reader faults 🔒](#fix-010--empty-catch-exception-in-subscribeasync-silently-swallowed-partition-reader-faults-)
+- [FIX-011 — Offset commit silently accepted unknown topics and out-of-range partitions 🔒](#fix-011--offset-commit-silently-accepted-unknown-topics-and-out-of-range-partitions-)
+- [FIX-012 — Concurrency tests that looked green but verified nothing (fake-green) 🔒](#fix-012--concurrency-tests-that-looked-green-but-verified-nothing-fake-green-)
+- [FIX-013 — Step 3 duplicated fan-in + async LATEST resolution caused a test hang; fixed by unifying fan-in and resolving at entry 🔒](#fix-013--step-3-duplicated-fan-in--async-latest-resolution-caused-a-test-hang-fixed-by-unifying-fan-in-and-resolving-at-entry-)
 
 ---
 
@@ -823,3 +827,169 @@
   reviewer and the analyzers.
 - **Marker hygiene note:** the study-notes section markers were changed from a personal `⭐ Interview-ready`
   label to a neutral **⭐ Key concept** — the previous wording was not appropriate for a public repo doc.
+
+---
+
+## DEC-023 — Offset commit semantics: committed = next offset to read (Kafka-style) 🔒
+
+**Status:** Accepted (2026-06-21), during M3a (before the `feat/m3a-consumer-groups` branch was merged).
+
+**Context.** M3a's `CommitOffset` stores a committed offset per `(group, topic, partition)`. The proto
+sketch described the value only as *"processed up to here,"* which is ambiguous between two semantics:
+- **(A)** committed = the **last processed** message's offset; resume = `committed + 1`.
+- **(B)** committed = the **next offset to read** (equivalently, the count of records processed); resume =
+  `committed`.
+
+The first Step 2 implementation used **(A)** *implicitly* — its range check was `offset >= highWatermark`
+and the M3a design note said "resume from `committed + 1`". This was never a deliberate choice; it fell out
+of using `MessageCount` as the upper bound. It also diverges from Kafka, the project's reference model.
+Surfaced at **Checkpoint B**: the isolated reviewer and the self-checks confirmed the store's internal
+locking was correct, but neither flagged the semantics question — a human review caught that the meaning of
+the committed value had never actually been decided, and that the implicit choice was the awkward one.
+
+**Decision.** Adopt **(B), Kafka-style**: the committed offset is the **next offset the group should read**
+for that partition (equivalently, the number of records processed so far). Concretely:
+- **Valid commit range is `0 .. highWatermark`** (inclusive). Reject only `offset > highWatermark`.
+  Committing `highWatermark` means "all records currently in the log have been processed."
+- **Resume streams from `committed` directly — not `committed + 1`.**
+- Backwards-commit rejection is unchanged (an offset below the current committed value is rejected).
+- "Nothing processed yet" is naturally `commit(0)` (valid even on an empty partition, where
+  `highWatermark = 0`).
+
+**Consequences.**
+- (+) Matches Kafka's mental model; no `+1` correction at either commit or resume, so there is one fewer
+  place for an off-by-one bug to hide.
+- (+) The first-processed and empty-partition edge cases express cleanly.
+- (−) A one-time correction of the Step 2 code (`offset >= highWatermark` → `offset > highWatermark`), its
+  unit tests (the out-of-range and concurrency assertions shift by one), and the M3a doc's "`committed + 1`"
+  wording. All corrected before the M3a branch merges; no released behavior is affected.
+- This **supersedes** the implicit (A) behavior in the first Step 2 commit on `feat/m3a-consumer-groups`.
+
+---
+
+## FIX-011 — Offset commit silently accepted unknown topics and out-of-range partitions 🔒
+
+**Where:** `InMemoryCommittedOffsetStore.CommitOffsetAsync` / `InMemoryTopicStore.GetPartitionHighWatermark`.
+M3a Step 2, caught at Checkpoint B (isolated reviewer, `[human judgment]` escalation → human decision).
+
+**Symptom.** The range check read the partition high watermark via `GetPartitionHighWatermark`, which
+returned `0` for a topic that was never published and for an out-of-range partition index alike. Under the
+(B) semantics (DEC-023) a commit of `0` is valid when `highWatermark == 0` ("nothing processed"), so a
+client could `commit(0)` to a **garbage topic** or to **partition -1 / 99** and receive `ok = true`. A
+nonsensical commit succeeded silently, stored under a meaningless key, and the client believed it had
+committed real progress — the classic "garbage in, silent success" that surfaces much later as a confusing
+debugging session.
+
+**Fix.** `GetPartitionHighWatermark` now returns `long?`: `null` for a never-published topic OR an
+out-of-range partition, otherwise the watermark. `CommitOffsetAsync` rejects a `null` with
+`ok = false, reason = "Unknown topic or invalid partition"`. The null-check sits inside the same single
+critical section (the lock) as the range/backwards checks and the write, so there is no check-then-act gap.
+
+**Decision recorded in code.** A commit acks records actually read; a topic/partition never published was
+never read, so it is rejected — variant **(a)**. The alternative **(b)** (allow `commit(0)` on a
+pre-created empty topic) is **deferred**; switching to it would need a new DEC and an API to pre-create
+empty topics. The reason is in a comment at the rejection branch and in the m3a design note, so a future
+reader does not mistake the rejection for a bug and "helpfully" remove it.
+
+**Lesson.** The reviewer flagged this as `[human judgment]` rather than deciding — correct, since whether
+to accept commits to not-yet-existing topics is a semantics call, not a mechanical defect. The human made
+the call (reject) and recorded both the choice and the deferred alternative.
+
+---
+
+## FIX-012 — Concurrency tests that looked green but verified nothing (fake-green) 🔒
+
+**Where:** `InMemoryCommittedOffsetStoreTests`. M3a Step 2, caught across several Checkpoint B rounds by
+the isolated reviewer once it was explicitly asked to hunt fake-green tests.
+
+**Symptom.** Several tests passed every run yet did not exercise what they claimed. A *fake-green* test is
+more dangerous than a flaky one: it never fails, so it never draws attention, while giving false confidence
+that a behavior is covered. Three distinct forms appeared in one test suite:
+
+1. **A concurrency test that created no concurrency — twice over.** First version dispatched 1,000 commits
+   in a sequential `for` loop, so the highest offset was scheduled last and reliably "won" regardless of
+   locking. Second version added a `TaskCompletionSource` start-gate but **without**
+   `RunContinuationsAsynchronously`, so `SetResult()` ran every waiter synchronously and serially on the
+   calling thread — still zero real contention. **The test passed even with `lock(_lock)` removed entirely**,
+   i.e. it never tested the race it was named for.
+2. **An assertion that held only via an internal detail.** `IndependentKeys` relied on round-robin
+   distributing 20 messages exactly 10/10 across two partitions; a routing change would silently break it.
+3. **Vacuous setups and discarded results.** A negative-offset test published to a topic the code never
+   touched (the guard short-circuits first); an "initial state" test published messages the read path never
+   consults; a backwards-commit test discarded its setup commit's `Ok` result, hiding a possible silent
+   setup failure behind a later, confusing assertion.
+
+**Fix.** (1) Real race: gate with `RunContinuationsAsynchronously`, shuffled inputs, bounded
+`WhenAll(...).WaitAsync(5s)` (FIX-008 discipline); the litmus is "would it still pass with the lock
+removed?" — now no. (2) Decoupled from routing: single-partition store, partition 0 across distinct
+`(group, topic)` keys, so asserted values do not depend on distribution. (3) Stripped vacuous setups and
+asserted every setup commit's result.
+
+**Lesson — and a feedback loop.** None of these were caught until the reviewer was *told* to look for
+fake-green specifically; the standard flaky/false-pass checklist did not cover "asserts, but the assertion
+is hollow." That gap was then closed at the source: the `code-review` skill's test checklist gained a
+dedicated **fake-green** section (concurrency tests that create no concurrency, the "passes with the lock
+removed?" litmus, implementation-detail-dependent assertions, vacuous setups, discarded setup results), so
+the lens runs at every checkpoint without being asked. This is the layered defense working as intended —
+a gap found by one review became a permanent mechanical check.
+
+---
+
+## FIX-013 — Step 3 duplicated fan-in + async LATEST resolution caused a test hang; fixed by unifying fan-in and resolving at entry 🔒
+
+**Where:** `MessageBusService.Subscribe` (group branch) and `InMemoryTopicStore`. M3a Step 3
+(resume-from-committed), found during human review of the Step 3/4 wiring — not at a formal checkpoint
+(Step 3 had been scoped "low-risk", which turned out to be wrong: it is the first place group semantics
+meet the subscribe path).
+
+**Symptom — a hang, with a deeper root cause.** Two problems compounded:
+1. **Duplicated fan-in.** The store's `SubscribeAsync` only supports "all partitions, one start offset", so
+   it could not express M3a's per-partition committed offsets. The group branch therefore re-implemented the
+   whole fan-in (an unbounded `Channel`, one `Task.Run` reader per partition, `WhenAll`) in the service
+   layer. The same concurrency-critical machinery now lived in two places, so LATEST atomicity and
+   lost-wakeup safety had to be guaranteed twice.
+2. **Async LATEST resolution → test hang.** To make LATEST (start offset `-1`) atomic, resolution was moved
+   *inside the partition lock* — but that lock ran inside the background `Task.Run`, so resolution became
+   asynchronous relative to the caller. Unit tests that expected LATEST to be pinned synchronously at
+   subscribe time raced the background reader: a publish would win, the watermark resolved to the
+   post-publish count, the target message was skipped, and the reader waited forever. The test hung.
+
+**Rejected first response.** The hang was initially "fixed" by inserting `await Task.Delay(50)` in the
+tests and deleting the LATEST-atomicity test. Both were rejected: `Task.Delay` is exactly the timing-based
+synchronization the flaky-test discipline forbids (FIX-008), and deleting the only test of the atomicity is
+the fake-green anti-pattern (FIX-012). Patching the symptom would have buried the real problem.
+
+**Root fix — rebuild the foundation, not patch on top.**
+- **Unified fan-in in the store.** Added one method, `ReadPartitionsAsync(topic, partition→startOffset map,
+  ct)`, with a private `CoreReadPartitionsAsync` that owns the Channel + per-partition `Task.Run` +
+  `WhenAll`→`TryComplete`. The existing `SubscribeAsync(topic, startOffset)` is re-expressed on top of it
+  (every partition mapped to the same offset). Fan-in now exists in exactly one place; the service builds a
+  map and calls it.
+- **Synchronous, atomic LATEST resolution at entry.** `Partition.ResolveStartOffset` resolves a negative
+  ("from now") request to the high watermark *inside the partition lock*, called on the caller's thread at
+  method entry — before any `Task.Run`. So resolution is both atomic (no publish can slip between reading
+  the watermark and pinning it) and synchronous (a caller, and a test, can rely on "subscribe returned ⇒
+  offset pinned"). The in-loop negative-resolution branch was removed from `ReadFromOffsetAsync`.
+- **De-duplicated the service.** `MessageBusService.Subscribe`'s group branch now validates, builds the
+  offset map (committed value directly per DEC-023; else EARLIEST=0 / LATEST=-1), calls `ReadPartitionsAsync`,
+  and streams. No Channel/Task.Run/WhenAll in the service anymore.
+- **Restored a real atomicity test.** It subscribes at LATEST on an empty partition (resolves to 0),
+  publishes offset 0 *after* subscribe returns, and asserts the reader receives it — a test that genuinely
+  fails if resolution is moved back off the synchronous-entry path (a bounded `WhenAny(read, Delay)` guards
+  against a hang turning into a silent pass, per FIX-008). No `Task.Delay` as synchronization anywhere.
+- **Closed a reader leak.** `CoreReadPartitionsAsync` now uses a linked `CancellationTokenSource`, threads
+  its token into the reader tasks, and cancels it in a `finally` around the consumption loop — so abandoning
+  the enumerator early (a `break` without cancelling) tears the background readers down instead of leaking
+  them into the unbounded channel.
+
+**Design principle established (recorded here rather than as a separate DEC, since the decision and the
+incident are one).** Fan-in is the **store's single responsibility** — the service never re-implements it.
+Start-offset resolution (including LATEST) happens **synchronously at subscribe entry, under the partition
+lock** — atomic and observable at once. These are the invariants future work (M3b/M3c) must preserve.
+
+**Lesson.** The hang's true cause was a collision between *atomicity* (resolve under the lock) and
+*testability* (resolve observably, synchronously). Moving resolution to subscribe entry satisfies both.
+And the duplicated fan-in was the root that made the defect possible at all — unifying it removed a whole
+class of "guarantee it twice" hazards. A step labelled low-risk deserved checkpoint-grade treatment because
+it touched the concurrency core; it got a code-review pass after the refactor, which is where the reader
+leak was caught.

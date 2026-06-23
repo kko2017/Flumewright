@@ -56,6 +56,7 @@ silence is the danger — and the reason a single layer of review is not enough.
 | **Cancellation mishandled** | A cancel is treated as an error (or an error as a cancel) → either spurious failures or silent hangs. |
 | **Deadlock** | Holding a lock across an `await`, or lock-ordering inversions → threads wait on each other forever. |
 | **Flaky test** | A test that synchronizes on timing (`Sleep`/`Delay`) or asserts a tight value on a probabilistic result → passes and fails without code changes, destroying trust in CI (worse than no test). |
+| **Fake-green test** | A test that passes *every* time but does not verify what it claims — e.g. a "concurrency" test that creates no real contention (sequential dispatch, or a TCS gate without `RunContinuationsAsynchronously`), so it would pass even with the lock removed (this is exactly FIX-012). More dangerous than flaky: it never draws attention. |
 
 These are the failure modes the layers below are designed to catch.
 
@@ -80,6 +81,8 @@ Disciplined patterns in the source itself:
 - **Atomic offset assignment** under a lock (or `Interlocked`), so concurrent appends never collide.
 - **Lost-wakeup-safe TCS**: re-check the condition under the lock before waiting, `RunContinuationsAsynchronously`, and complete the TCS outside the lock.
 - **Lock scope correct**: shared state is only touched inside its lock; `await` happens outside it (no lock held across await).
+- **Start-offset resolution is synchronous and atomic at entry**: resolving a relative start position (LATEST → "from now") reads the high watermark *under the partition lock, on the caller's thread, before any background reader is spawned* — so no publish can slip between reading the watermark and pinning it (atomic), and the resolved offset is observable the moment subscribe returns (synchronous). Resolving it later, inside the background reader, was the cause of FIX-013.
+- **Fan-in lives in one place**: the partition fan-in (Channel + per-partition reader + completion) is the store's single responsibility; callers (the service layer) never re-implement it. One implementation means the lost-wakeup and atomicity guarantees are made once, not duplicated (the duplication was the root of FIX-013).
 - **Cancellation is normal shutdown**: `OperationCanceledException` is caught and treated as a clean stop; other exceptions are *not* swallowed but propagated to the subscriber (via channel completion with the exception).
 
 ### Layer 2 — Human checkpoints + an isolated reviewer sub-agent *— in place*
@@ -116,10 +119,33 @@ Concurrency defense is not theoretical here; the layers have already paid off:
 - **FIX-010 — swallowed exception in the partition reader.** An empty `catch (Exception)` discarded every
   fault from the background reader. **Both** the checkpoint review and the end-of-milestone zoom-out missed
   it; **static analysis (SonarCloud / CA1031)** — Layer 3 — caught it on day one. A bug a human reads past.
+- **FIX-011 — offset commit silently accepted unknown topics / out-of-range partitions.** The watermark
+  read returned `0` for both "empty" and "does not exist", so a commit to a garbage topic or partition `-1`
+  returned `ok=true`. Caught by the **isolated reviewer** (Layer 2), which correctly escalated it as a
+  *human-judgment* semantics call rather than deciding itself.
+- **FIX-012 — fake-green concurrency tests.** Tests that passed every run while creating no real contention
+  (sequential dispatch; a TCS gate without `RunContinuationsAsynchronously`) — they would have passed with
+  the lock removed. Caught by the **isolated reviewer** (Layer 2) *only after it was asked to hunt
+  fake-green specifically*; the gap was then closed permanently by adding a fake-green section to the
+  `code-review` checklist, so the lens now runs unprompted at every checkpoint. A review-found gap became a
+  mechanical check — defense in depth improving itself.
 
-The lesson that shapes this whole document: **FIX-009 and FIX-010 were caught by different layers.** Human
-reasoning catches semantic/concurrency bugs a person can think through; mechanical analysis catches the
-empty-catch a person skims over. Neither layer alone is enough — which is why there are five.
+- **FIX-013 — duplicated fan-in + async LATEST resolution → test hang.** The group-subscribe path
+  re-implemented the store's fan-in (because the store couldn't express per-partition offsets), and making
+  LATEST atomic pushed its resolution into the background reader, so it became async and a test hung. Caught
+  by **human review** (Layer 2) of the wiring; the first attempt to patch it (a `Task.Delay` and deleting the
+  atomicity test) was rejected as FIX-008/FIX-012 violations, and the foundation was rebuilt instead (single
+  fan-in in the store; LATEST resolved synchronously-at-entry under the lock). A post-refactor **code-review**
+  (Layer 2) then caught a reader leak. A bug whose real cause was a duplicated-implementation smell, not a
+  single wrong line.
+
+The lesson that shapes this whole document: **these bugs were caught by different layers, and no single
+layer would have caught them all.** Human reasoning catches semantic/concurrency bugs a person can think
+through (FIX-009, FIX-013); mechanical analysis catches the empty-catch a person skims over (FIX-010); the
+isolated reviewer catches both a semantics call it knows to escalate (FIX-011) and a hollow test the author
+is blind to (FIX-012). And when a review finds a gap in its own checklist, that gap becomes a permanent
+check (FIX-012 → the fake-green checklist item). Neither layer alone is enough — which is why there are five,
+and why they feed each other.
 
 ---
 

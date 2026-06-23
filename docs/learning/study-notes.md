@@ -124,13 +124,22 @@ Make processing the same message twice yield the same result.
 - Good: "if transaction ID X, set balance to 500" / record processed message IDs and skip duplicates
 
 ### Flumewright Behavior (log model)
-In a log model, "ack" is an **offset commit**: the subscriber tells the broker "I've processed up to offset N."
+In a log model, "ack" is an **offset commit**: the subscriber tells the broker how far it has processed.
 That commit IS the acknowledgment — it's how at-least-once is realized here, rather than acking each message
 individually as in a push model.
+
+**What value is committed — the Kafka convention (Flumewright follows it, DEC-023).** The committed offset
+is the **next offset to read**, i.e. the *count* of records processed — not the offset of the last processed
+record. So after handling records `0..N-1`, the consumer commits `N`. Resume then streams from `committed`
+**directly** (no `+1`): the committed value already points at the first unprocessed record. Committing
+`highWatermark` (the partition's message count) means "everything currently in the log is done"; an empty or
+untouched partition is naturally `committed = 0`. The rejected alternative — committing the *last processed*
+offset and resuming at `committed + 1` — was avoided because it needs a `+1` correction at both commit and
+resume, doubling the chances of an off-by-one bug.
 ```
-subscriber reads from its committed offset → processes → commits offset N
+subscriber reads from its committed offset → processes → commits next offset (count processed)
    ↑                                                          │
-   └── on crash/restart, resume from last committed offset ◀──┘  (messages after N are re-read → at-least-once)
+   └── on crash/restart, resume from committed offset ◀───────┘  (records at/after committed re-read → at-least-once)
 ```
 - The subscriber's **committed offset** is the durable "up to here is done" marker.
 - If it crashes before committing, it resumes from the last commit and **re-reads** (possible duplicates →
@@ -372,8 +381,8 @@ after processing** — a crash replays from the committed point, so unfinished w
 3. **batch read (throughput)** — fetch many ahead, process one at a time; read naturally runs ahead of
    commit. A bonus the two-bookmark split enables, not the reason for it.
 
-**Commit model (M3a):** processing-then-**manual**-**batch** commit. The consumer explicitly commits
-"finished up to offset N" after processing a batch; the broker stores it per `(group, topic, partition)`.
+**Commit model (M3a):** processing-then-**manual**-**batch** commit. The consumer explicitly commits the
+next offset to read (the count processed) after a batch; the broker stores it per `(group, topic, partition)`.
 Manual (not auto) because auto-commit tracks the *read* position and can lose in-flight work; manual commits
 only what's actually done. Batch (not per-message) for throughput — at the cost of a larger replay window on
 crash.
@@ -671,6 +680,56 @@ as *exactly* 36.5 °C would flag a perfectly healthy 36.7 as abnormal; the *accu
 (36–37.5). Temperature naturally varies; so does a hash distribution. (Flumewright examples: 09 FIX-008 — an
 integration test made robust with a bounded timeout instead of an unbounded wait — is the same idea on the
 timing axis: assert "arrives within a bound", not "arrives at an exact instant".)
+
+### Fake-green: the test that always passes and verifies nothing 🔒
+A flaky test fails *sometimes* — at least it draws attention. A **fake-green** test is the opposite and more
+insidious: it passes *every* time while not actually exercising what it claims. It asserts something, but the
+assertion is hollow, so it gives false confidence that a behavior is covered when it is not. Because it never
+goes red, nothing ever points at it. (Flumewright hit several of these at once — see 09 FIX-012.)
+
+The hardest case is a **concurrency test that creates no concurrency.** Two ways it happened here, both
+subtle:
+- **Sequential dispatch.** Spawning N tasks in a plain `for` loop tends to let the last-scheduled task run
+  last. If that task carries the "winning" value (e.g. the highest offset), the final state is correct by
+  *scheduling order*, not by the lock — so the test passes even if the lock is broken.
+- **A start-gate that isn't really a gate.** The fix for the above is to make all tasks wait on one signal,
+  then release them together. But a `TaskCompletionSource` created *without*
+  `TaskCreationOptions.RunContinuationsAsynchronously` runs its continuations **inline and synchronously on
+  the thread that calls `SetResult()`**. So `gate.SetResult()` executes all the waiting tasks one after
+  another on a single thread — again no real contention. (This is the flip side of the lost-wakeup reason
+  for using `RunContinuationsAsynchronously` in production code, §earlier: there it prevents inline
+  continuations from deadlocking under a lock; here their absence silently serializes a "concurrency" test.)
+
+The one-question litmus for any concurrency test: **would it still pass if the lock under test were
+removed?** If yes, it isn't testing the race. A genuine race needs (1) a gate with
+`RunContinuationsAsynchronously`, (2) inputs shuffled so order can't save you, and (3) a bounded
+`WhenAll(...).WaitAsync(timeout)` so a real deadlock fails fast instead of hanging (§FIX-008).
+
+Two more fake-green shapes, not concurrency-specific:
+- **Assertion that holds only via an internal detail** — e.g. relying on round-robin distributing messages
+  exactly evenly; change the routing and the test silently breaks. Make the input deterministic instead.
+- **Vacuous setup** — setup that never enters the code path under test (publishing to a topic before a guard
+  that short-circuits first), or a setup step whose own result is discarded so its silent failure surfaces
+  later as a confusing assertion. The test passes identically with the setup removed — which means the setup
+  is proving nothing.
+
+The meta-lesson: flaky and fake-green are *both* "the test is lying", just in opposite directions — flaky
+lies by failing when the code is fine, fake-green lies by passing when the code is broken. Both are defects
+in the test, not the code.
+
+### When you resolve a value can fight with how you test it 🔒
+A subtler lesson from FIX-013, worth keeping because it is not obvious. To make a relative read position
+(LATEST = "from now") *atomic*, the natural move is to resolve it under the lock — but if that lock runs
+inside a background reader task, resolution becomes **asynchronous**: the caller has no way to know when it
+happened. A test that publishes right after subscribing then races the background resolution, and "fix" it
+with a `Task.Delay` and you are back to a flaky test.
+
+The resolution: resolve **at entry, on the caller's thread, before spawning the background work** — still
+under the lock (so still atomic), but now **synchronous** (so the caller, and the test, can rely on "the
+call returned ⇒ the value is pinned"). Atomicity and observability are not in conflict once resolution
+happens at the synchronous boundary instead of deep inside an async hop. The general principle: **if a test
+needs a `Task.Delay` to be reliable, the real problem is usually that something is resolved later (and less
+observably) than it should be** — move the resolution earlier rather than papering over the timing.
 
 ---
 
