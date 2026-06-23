@@ -69,10 +69,6 @@ public class InMemoryTopicStoreTests
         var enumerator = store.SubscribeAsync("topic1", cts.Token).GetAsyncEnumerator(cts.Token);
         var pendingRead = enumerator.MoveNextAsync().AsTask();
 
-        // Give the background reader tasks a moment to initialize and resolve LATEST
-        // before we publish the message we want them to catch.
-        
-
         // Publish offset 1
         await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
 
