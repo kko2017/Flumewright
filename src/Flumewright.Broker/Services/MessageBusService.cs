@@ -55,8 +55,7 @@ public class MessageBusService : MessageBus.MessageBusBase
             throw new RpcException(new Status(StatusCode.InvalidArgument, "Group subscribe requires explicit partitions."));
         }
 
-        // NOSONAR imperative validation-then-throw is clearer than a LINQ filter here
-        foreach (var p in request.Partitions)
+        foreach (var p in request.Partitions)   // NOSONAR imperative validation-then-throw is clearer than a LINQ filter here
         {
             if (_topicStore.GetPartitionHighWatermark(request.Topic, p) == null)
             {
