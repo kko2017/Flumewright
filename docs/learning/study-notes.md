@@ -431,6 +431,59 @@ The responsibility for type interpretation lies with both clients (+ Schema Regi
 
 ---
 
+## 9.5 Distributed messaging semantics: delivery, ordering, failure
+
+*(Learned while designing M3b — the failure path. The three concepts below are settled; the three
+implementation details further down are placeholders to fill in once M3b is actually built.)*
+
+### Order vs progress — you can't keep both once a message fails ⭐ Key concept
+On the normal path, per-partition order and forward progress coexist trivially: process 0, 1, 2… in order,
+commit as you go. The moment a message **fails**, they conflict, and you must pick:
+- **Keep order (blocking retry):** retry the failed message in place; later messages wait behind it. The
+  partition stops making progress while it retries — *head-of-line blocking*.
+- **Keep progress (non-blocking retry):** move the failed message aside (to a retry topic) and continue with
+  later messages. That message loses its place in the partition's order.
+
+There is no third option that keeps both — that is the whole tension of failure handling in a log. Which to
+choose depends on *why* it failed: a **transient** downstream outage tends to fail the next messages too, so
+blocking (wait it out, keep order) is often better; a **poison** message (permanently bad) should be moved
+aside so it doesn't block anything. A mature system offers both and lets the user choose per use case
+(Kafka's ecosystem does exactly this).
+
+### At-least-once duplication comes from *two operations not being atomic* ⭐ Key concept
+At-least-once doesn't mean "duplicates randomly happen" — it means a specific, locatable thing: whenever
+"do the work" and "record that it's done" are **two separate steps**, a crash *between* them replays the
+work. Concretely: read offset k → publish it onward → commit k. If the process dies after publish but before
+commit, resume re-reads k and publishes it again → duplicate. The only way to remove the duplicate is to make
+the two steps **atomic** (a transaction binding output + offset) — that is what "exactly-once" requires, and
+without it the floor is at-least-once. So the defense is not "try to avoid crashes" but **idempotency on the
+consumer**: make re-processing the same message produce the same result. Recognizing "where are my two
+non-atomic steps?" is the general skill — it locates exactly where duplicates can enter.
+
+### The broker stays a broker — capability vs policy ⭐ Key concept
+A recurring design line in this project: the broker provides **general mechanism**, not **specific policy**.
+It appends to logs, serves offsets, treats payloads as opaque bytes (§9) — and, as confirmed in M3b, it does
+**not** implement retry or dead-letter logic. Those are *policies* built on top of the general mechanism by
+the client/SDK, using plain topics the broker already serves (a DLQ is just another topic someone publishes
+to). This is the Kafka model, and it is why the broker stays small and reusable: every higher-level behavior
+(retry, DLQ, ordering guarantees) is composed from the same few primitives rather than baked into the broker.
+The skill is spotting the line between "mechanism everyone needs" (belongs in the broker) and "policy that
+varies by user" (belongs above it).
+
+### To fill in once M3b is implemented ⏳
+*Placeholders — these are designed but not yet built; complete them from the code after M3b so the notes
+record what was actually learned, not just planned:*
+- **Error classification (transient vs poison) in practice** — how `RetryPolicy.shouldRetry` ended up
+  drawing the line, and which failures were ambiguous. *(fill after M3b)*
+- **Extension-point design: open the structure, defer the implementation** — how `RetryPolicy` was shaped to
+  express single/multi-stage/blocking + delay while Phase 1 implemented only the simplest, and whether that
+  shape actually held up when extended. *(fill after M3b / Phase 2)*
+- **The delayed-retry trap** — why you can't just sleep a consumer to delay redelivery (it gets treated as
+  dead and its partitions reassigned), and what due-time mechanism replaces it. *(fill when delayed backoff
+  is built — Phase 2)*
+
+---
+
 ## 10. gRPC Transport Patterns
 
 gRPC is HTTP/2-based and supports four communication patterns.

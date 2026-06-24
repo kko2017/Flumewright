@@ -9,6 +9,30 @@
 
 ---
 
+## Deferred Items Ledger
+
+A single checkpoint for everything we consciously deferred, so "later" doesn't become "never". When a
+milestone starts, scan this table for items tagged to it. Plans may change at that point — that is the
+intent: each milestone boundary is a review moment, not a binding contract. The authoritative detail lives
+in the referenced DEC/FIX entry or design note; this table is the index.
+
+| Item | What | Deferred to | Status / revisit |
+|------|------|-------------|------------------|
+| DEC-001 | Streaming Publish (unary → client/bidi stream) | M5 | Open — revisit M5 |
+| DEC-002 | `Acknowledge` RPC | M3 | **Closed — superseded.** ack = offset commit (M3a `CommitOffset`); nack = SDK pattern (publish to retry/dlq topic), no broker RPC. See M3b design note. |
+| DEC-002 | `Admin` RPC (topic management) | M3 | Open — when topic management is actually needed (not M3a/b/c) |
+| DEC-006 | Disposal: in-flight / redelivery timers & schedulers | M3 | **Deferred further → Phase 2.** M3b uses no-delay non-blocking retry (no timers). Applies when delayed backoff is built (see "delayed backoff" row). |
+| DEC-006 | Disposal: `X509Certificate2` (secure connections) | M4 | Open — M4 (mTLS) |
+| DEC-006 | Disposal: disk WAL `FileStream` / segment handles | Phase 2 | Open — Phase 2 (`DiskTopicStore` as `IAsyncDisposable`) |
+| DEC-006 | Bound `_topics` dictionary growth (slow leak under many distinct topics) | M2+ | Open — revisit (no firm milestone) |
+| DEC-004 | certs/keys + logs gitignore realization | M4 / M6 | Partial — M4 certgen → `certs/`; M6 logging → `logs/` |
+| DEC-017 | Microsoft Coyote (systematic concurrency testing) 🔒 | after M3 | Open — after M3c (M3 adds consumer-group/offset-commit concurrency; Coyote lands naturally after) |
+| FIX (M1) | Test enumerator `await using` (~7 tests) | — | Open — low priority; one commit when touched |
+| M3b design | **Delayed / multi-stage retry backoff** (retry-1/2/3 with increasing delay) 🔒 | **Phase 2** | NEW — requires a delayed-redelivery scheduling mechanism (cannot sleep the consumer; due-time pause/resume). M3b opens the structure (`RetryPolicy` returns destination + delay); Phase 2 implements the delay. |
+| M3b design | **Blocking (in-place) retry mode** 🔒 | **Phase 2** | NEW — shares the same delay mechanism as multi-stage backoff, so built together in Phase 2. M3b leaves it as an extension point only; non-blocking is the M3b default. Use case: transient downstream failures where preserving order is worth blocking. |
+
+---
+
 ## Contents
 
 ### Decisions (DEC)
@@ -113,6 +137,11 @@
   delivery (M3); Admin is low-priority control surface.
 - **Future impact:** M3 adds `Acknowledge` (+ in-flight/DLQ) to the contract; Admin can come when topic
   management is needed. Adding RPCs is backward-compatible, so deferral is cheap.
+- **Update (M3a/M3b):** the `Acknowledge` half is now **superseded** — ack is expressed as offset commit
+  (M3a's `CommitOffset`, per DEC-023), and nack is an SDK-side pattern (publish to a retry/dlq topic), not a
+  broker RPC, per the M3b design (Kafka-style: the broker has no ack/nack RPC). No `Acknowledge` RPC will be
+  added. `Admin` remains open (deferred until topic management is needed; not part of M3a/b/c). See the
+  Deferred Items Ledger.
 
 ---
 
