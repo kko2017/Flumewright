@@ -55,6 +55,30 @@ public sealed class RetryingConsumer
         }
     }
 
+    public async Task ConsumeWithRetriesAsync(
+        string topic,
+        string groupId,
+        IReadOnlyList<int> primaryPartitions,
+        IReadOnlyList<int> retryPartitions,
+        Func<ReceivedMessage, CancellationToken, Task> messageHandler,
+        FlumewrightOffsetReset reset = FlumewrightOffsetReset.Earliest,
+        CancellationToken ct = default)
+    {
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        try
+        {
+            var primaryTask = ConsumeGroupAsync(topic, groupId, primaryPartitions, messageHandler, reset, linkedCts.Token);
+            var retryTask = ConsumeGroupAsync($"{topic}.retry", groupId, retryPartitions, messageHandler, reset, linkedCts.Token);
+
+            var completedTask = await Task.WhenAny(primaryTask, retryTask);
+            await completedTask; // Propagate exceptions if any
+        }
+        finally
+        {
+            await linkedCts.CancelAsync();
+        }
+    }
+
     private async Task HandleFailureAsync(
         ReceivedMessage originalMsg, 
         Exception failure, 
