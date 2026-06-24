@@ -33,19 +33,24 @@ public sealed class RetryingConsumer
     {
         await foreach (var msg in _subscriber.SubscribeGroupAsync(topic, groupId, partitions, reset, ct))
         {
+            bool success = false;
             try
             {
                 await messageHandler(msg, ct);
-                
-                // On success, commit the offset
-                await _subscriber.CommitOffsetAsync(groupId, topic, msg.Partition, msg.Offset, ct);
+                success = true;
             }
 #pragma warning disable CA1031 // We intentionally catch all handler exceptions to apply the retry policy
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
 #pragma warning restore CA1031
             {
                 // On failure, apply the policy (non-blocking retry)
                 await HandleFailureAsync(msg, ex, groupId, topic, ct);
+            }
+
+            if (success)
+            {
+                // On success, commit the offset
+                await _subscriber.CommitOffsetAsync(groupId, topic, msg.Partition, msg.Offset, ct);
             }
         }
     }
