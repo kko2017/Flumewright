@@ -31,3 +31,16 @@ logs/
 # Local config
 appsettings.Development.json
 *.local.json
+
+# Personal working drafts (numbered source docs; repo uses docs/ only — see plan language policy)
+/[0-9][0-9]-*.md
+/FW_Context.md
+/ai-collaboration.en.md
+
+# Ad-hoc diff dumps (work scratch)
+*_diff.txt
+
+# Tooling / environment scratch (not part of the project)
+dotnet/
+.github/copilot-instructions.md
+.devcontainer/devcontainer-lock.json
