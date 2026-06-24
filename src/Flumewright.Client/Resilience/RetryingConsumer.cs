@@ -49,8 +49,8 @@ public sealed class RetryingConsumer
 
             if (success)
             {
-                // On success, commit the offset
-                await _subscriber.CommitOffsetAsync(groupId, topic, msg.Partition, msg.Offset, ct);
+                // On success, commit the offset + 1 to advance the partition
+                await _subscriber.CommitOffsetAsync(groupId, topic, msg.Partition, msg.Offset + 1, ct);
             }
         }
     }
@@ -128,8 +128,8 @@ public sealed class RetryingConsumer
         // 1. Publish the outgoing copy to the retry/dlq topic
         await _publisher.PublishAsync(destinationTopic, originalMsg.Payload, null, newHeaders, null, ct);
 
-        // 2. Commit the original offset so the original partition can progress.
+        // 2. Commit the original offset + 1 so the original partition can progress.
         // This publish-then-commit boundary is explicitly non-atomic (at-least-once duplication accepted).
-        await _subscriber.CommitOffsetAsync(groupId, consumedTopic, originalMsg.Partition, originalMsg.Offset, ct);
+        await _subscriber.CommitOffsetAsync(groupId, consumedTopic, originalMsg.Partition, originalMsg.Offset + 1, ct);
     }
 }
