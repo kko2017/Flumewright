@@ -9,6 +9,12 @@ service MessageBus {
   rpc Subscribe(SubscribeRequest) returns (stream DeliverEnvelope);
   // M3a: manual batch commit of offsets
   rpc CommitOffset(CommitRequest) returns (CommitAck);
+
+  // M3c: group coordination
+  rpc JoinGroup(JoinGroupRequest) returns (JoinGroupResponse);
+  rpc SyncGroup(SyncGroupRequest) returns (SyncGroupResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc LeaveGroup(LeaveGroupRequest) returns (LeaveGroupResponse);
 }
 
 message PublishEnvelope {
@@ -53,9 +59,71 @@ message CommitRequest {
   string topic = 2;
   int32 partition = 3;
   int64 offset = 4;
+  int32 generation = 5;
 }
 
 message CommitAck {
   bool ok = 1;
   string reason = 2;
+}
+
+message JoinGroupRequest {
+  string group_id = 1;
+  string member_id = 2;
+  repeated string topics = 3;
+}
+
+message MemberMetadata {
+  string member_id = 1;
+  repeated string topics = 2;
+}
+
+message JoinGroupResponse {
+  bool ok = 1;
+  string reason = 2;
+  int32 generation = 3;
+  string member_id = 4;
+  bool is_leader = 5;
+  repeated MemberMetadata members = 6;
+}
+
+message MemberAssignment {
+  string member_id = 1;
+  string topic = 2;
+  repeated int32 partitions = 3;
+}
+
+message SyncGroupRequest {
+  string group_id = 1;
+  string member_id = 2;
+  int32 generation = 3;
+  repeated MemberAssignment assignments = 4;
+}
+
+message SyncGroupResponse {
+  bool ok = 1;
+  string reason = 2;
+  repeated MemberAssignment assignments = 3;
+  int32 generation = 4;
+}
+
+message HeartbeatRequest {
+  string group_id = 1;
+  string member_id = 2;
+  int32 generation = 3;
+}
+
+message HeartbeatResponse {
+  bool ok = 1;
+  string reason = 2;
+  bool rebalance_in_progress = 3;
+}
+
+message LeaveGroupRequest {
+  string group_id = 1;
+  string member_id = 2;
+}
+
+message LeaveGroupResponse {
+  bool ok = 1;
 }
