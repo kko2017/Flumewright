@@ -86,7 +86,7 @@ public sealed class RetryingConsumer
                 }
                 // Expected: the loser task is cancelled via the linked CTS after WhenAny completes.
                 // Only this cancellation is swallowed; any other fault from either subscription still propagates (FIX-015).
-                catch (OperationCanceledException) { }
+                catch (OperationCanceledException) { } // NOSONAR S108 — intentional: see comment above (FIX-015)
             }
         }
     }

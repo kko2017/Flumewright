@@ -16,7 +16,9 @@ public sealed class RedeliveryDlqE2ETests : IClassFixture<BrokerAppFactory>
     private readonly BrokerAppFactory _factory;
     public RedeliveryDlqE2ETests(BrokerAppFactory factory) => _factory = factory;
 
-    private Task RunPumpAsync(Func<Task> action, CancellationToken ct)
+    private static readonly int[] AllPartitions = { 0, 1, 2, 3 };
+
+    private static Task RunPumpAsync(Func<Task> action, CancellationToken ct)
     {
         return Task.Run(async () =>
         {
@@ -78,7 +80,7 @@ public sealed class RedeliveryDlqE2ETests : IClassFixture<BrokerAppFactory>
 
         var retryPump = RunPumpAsync(async () =>
         {
-            await foreach (var msg in retrySub.SubscribeGroupAsync($"{topic}.retry", "retry-cg", new[] { 0, 1, 2, 3 }, FlumewrightOffsetReset.Earliest, cts.Token))
+            await foreach (var msg in retrySub.SubscribeGroupAsync($"{topic}.retry", "retry-cg", AllPartitions, FlumewrightOffsetReset.Earliest, cts.Token))
             {
                 if (Encoding.UTF8.GetString(msg.Payload) == "dummy") continue;
                 retryReceived.TrySetResult(msg);
@@ -126,7 +128,7 @@ public sealed class RedeliveryDlqE2ETests : IClassFixture<BrokerAppFactory>
                 topic,
                 groupId,
                 new[] { partition },
-                new[] { 0, 1, 2, 3 },
+                AllPartitions,
                 (msg, ct) =>
                 {
                     if (Encoding.UTF8.GetString(msg.Payload) == "dummy") return Task.CompletedTask;
@@ -141,7 +143,7 @@ public sealed class RedeliveryDlqE2ETests : IClassFixture<BrokerAppFactory>
 
         var dlqPump = RunPumpAsync(async () =>
         {
-            await foreach (var msg in dlqSub.SubscribeGroupAsync($"{topic}.dlq", "dlq-cg", new[] { 0, 1, 2, 3 }, FlumewrightOffsetReset.Earliest, cts.Token))
+            await foreach (var msg in dlqSub.SubscribeGroupAsync($"{topic}.dlq", "dlq-cg", AllPartitions, FlumewrightOffsetReset.Earliest, cts.Token))
             {
                 if (Encoding.UTF8.GetString(msg.Payload) == "dummy") continue;
                 dlqReceived.TrySetResult(msg);
@@ -195,7 +197,7 @@ public sealed class RedeliveryDlqE2ETests : IClassFixture<BrokerAppFactory>
 
         var dlqPump = RunPumpAsync(async () =>
         {
-            await foreach (var msg in dlqSub.SubscribeGroupAsync($"{topic}.dlq", "dlq-cg", new[] { 0, 1, 2, 3 }, FlumewrightOffsetReset.Earliest, cts.Token))
+            await foreach (var msg in dlqSub.SubscribeGroupAsync($"{topic}.dlq", "dlq-cg", AllPartitions, FlumewrightOffsetReset.Earliest, cts.Token))
             {
                 if (Encoding.UTF8.GetString(msg.Payload) == "dummy") continue;
                 dlqReceived.TrySetResult(msg);
@@ -250,6 +252,7 @@ public sealed class RedeliveryDlqE2ETests : IClassFixture<BrokerAppFactory>
         }, pumpCts.Token);
 
         await healthyReceived.Task.WaitAsync(cts.Token);
+        healthyReceived.Task.IsCompletedSuccessfully.Should().BeTrue();
         await pumpCts.CancelAsync();
         try { await pump; } catch (OperationCanceledException) { }
     }
