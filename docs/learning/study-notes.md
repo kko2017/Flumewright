@@ -433,8 +433,9 @@ The responsibility for type interpretation lies with both clients (+ Schema Regi
 
 ## 9.5 Distributed messaging semantics: delivery, ordering, failure
 
-*(Learned while designing M3b — the failure path. The three concepts below are settled; the three
-implementation details further down are placeholders to fill in once M3b is actually built.)*
+*(Learned while designing M3b — the failure path. The three concepts below are settled; the
+implementation details further down were placeholders, now filled from the built code (two of three; the
+delayed-retry one stays open until Phase 2).)*
 
 ### Order vs progress — you can't keep both once a message fails ⭐ Key concept
 On the normal path, per-partition order and forward progress coexist trivially: process 0, 1, 2… in order,
@@ -470,17 +471,35 @@ to). This is the Kafka model, and it is why the broker stays small and reusable:
 The skill is spotting the line between "mechanism everyone needs" (belongs in the broker) and "policy that
 varies by user" (belongs above it).
 
-### To fill in once M3b is implemented ⏳
-*Placeholders — these are designed but not yet built; complete them from the code after M3b so the notes
-record what was actually learned, not just planned:*
-- **Error classification (transient vs poison) in practice** — how `RetryPolicy.shouldRetry` ended up
-  drawing the line, and which failures were ambiguous. *(fill after M3b)*
-- **Extension-point design: open the structure, defer the implementation** — how `RetryPolicy` was shaped to
-  express single/multi-stage/blocking + delay while Phase 1 implemented only the simplest, and whether that
-  shape actually held up when extended. *(fill after M3b / Phase 2)*
+### Filled in after M3b was built ✅
+
+- **Error classification (transient vs poison) in practice.** The default policy drew the line the simplest
+  way that still respects the distinction: *everything is transient (→ retry) unless explicitly marked
+  poison.* Poison is signalled by the handler throwing a dedicated `PoisonMessageException` (checked directly
+  and one level into `InnerException`); anything else is assumed retryable. The lesson is that the *direction*
+  of the default matters — defaulting to transient means an unforeseen failure gets retried a bounded number
+  of times and then quarantined in the DLQ (safe: bounded waste, nothing lost), whereas defaulting to poison
+  would send unforeseen-but-recoverable failures straight to the DLQ (unsafe: gives up on recoverable work).
+  So the ambiguous middle (a failure the code can't confidently classify) is deliberately resolved *toward
+  retry*, with `maxAttempts` as the backstop. Drawing the taxonomy is the user's job (that's why
+  `shouldRetry` is a policy hook); the framework only fixes the safe default and the bound.
+
+- **Extension-point design: open the structure, defer the implementation.** `RetryPolicy` returns a
+  *destination topic + delay* (`RetryAction`), not just a yes/no. Phase 1 only ever returns `{topic}.retry`
+  with `TimeSpan.Zero`, so the delay field is currently dead — but the *shape* already expresses multi-stage
+  (return `retry.1`, `retry.2`, … keyed on attempt count) and blocking/backoff (non-zero delay) without any
+  signature change. The honest caveat: opening the shape is cheap and was validated only in the weak sense
+  that Phase-1 single-stage fits inside it cleanly; whether it *truly* held up will only be known when Phase 2
+  actually implements multi-stage + delay against it. "Open the structure now, implement later" de-risks the
+  future change, but it is not the same as having proven the structure — that proof is deferred with the
+  implementation. (A small real-world reminder of this: the helper's offset-commit arithmetic looked fine in
+  the design and in review, and only an integration test against a real broker proved it — FIX-014. Shapes
+  and signatures pass review; behaviour needs a behavioural test.)
+
 - **The delayed-retry trap** — why you can't just sleep a consumer to delay redelivery (it gets treated as
-  dead and its partitions reassigned), and what due-time mechanism replaces it. *(fill when delayed backoff
-  is built — Phase 2)*
+  dead and its partitions reassigned), and what due-time mechanism replaces it. *(still a placeholder — fill
+  when delayed backoff is actually built in Phase 2; M3b deliberately ships immediate retry only, so there is
+  nothing implemented to record yet.)*
 
 ---
 

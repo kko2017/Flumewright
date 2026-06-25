@@ -74,6 +74,8 @@ in the referenced DEC/FIX entry or design note; this table is the index.
 - [FIX-011 — Offset commit silently accepted unknown topics and out-of-range partitions 🔒](#fix-011--offset-commit-silently-accepted-unknown-topics-and-out-of-range-partitions-)
 - [FIX-012 — Concurrency tests that looked green but verified nothing (fake-green) 🔒](#fix-012--concurrency-tests-that-looked-green-but-verified-nothing-fake-green-)
 - [FIX-013 — Step 3 duplicated fan-in + async LATEST resolution caused a test hang; fixed by unifying fan-in and resolving at entry 🔒](#fix-013--step-3-duplicated-fan-in--async-latest-resolution-caused-a-test-hang-fixed-by-unifying-fan-in-and-resolving-at-entry-)
+- [FIX-014 — RetryingConsumer committed the processed offset instead of the next offset (broke resume; surfaced by M3b integration tests) 🔒](#fix-014--retryingconsumer-committed-the-processed-offset-instead-of-the-next-offset-broke-resume-surfaced-by-m3b-integration-tests-)
+- [FIX-015 — Unawaited tasks in the dual-subscription helper and in the redelivery tests (swallowed-exception / fake-green risk) 🔒](#fix-015--unawaited-tasks-in-the-dual-subscription-helper-and-in-the-redelivery-tests-swallowed-exception--fake-green-risk-)
 
 ---
 
@@ -1022,3 +1024,76 @@ And the duplicated fan-in was the root that made the defect possible at all — 
 class of "guarantee it twice" hazards. A step labelled low-risk deserved checkpoint-grade treatment because
 it touched the concurrency core; it got a code-review pass after the refactor, which is where the reader
 leak was caught.
+
+## FIX-014 — RetryingConsumer committed the processed offset instead of the next offset (broke resume; surfaced by M3b integration tests) 🔒
+
+**Where:** `RetryingConsumer.ConsumeGroupAsync` (success path) and `HandleFailureAsync` (failure path),
+`Flumewright.Client.Resilience`. Introduced in M3b Step 2 — which **passed Checkpoint A** — and found in M3b
+Step 4 when the first redelivery/DLQ integration tests were written.
+
+**Symptom.** Both commit sites called `CommitOffsetAsync(..., msg.Offset, ...)`, committing the offset of the
+message just handled. Per DEC-023 the committed value is the *next* offset to read, so committing `msg.Offset`
+means a resumed consumer re-reads the message it already processed: the partition never advances past it and
+the same message is redelivered forever (head-of-line stall — exactly the failure M3b exists to prevent).
+The happy-path `ConsumerGroupE2ETests` did not catch it because those tests call `CommitOffsetAsync` directly
+with hand-computed, already-incremented values (e.g. commit `3` after reading offsets 0–2); the defect lived
+only in the helper, which derived the commit value from `msg.Offset` itself.
+
+**Why the earlier layer missed it.** Step 2 was gated at Checkpoint A by an isolated `code-review` over the
+diff, with no integration test yet (integration was deliberately deferred to Step 4). The off-by-one is
+invisible in a diff read — `msg.Offset` looks plausible on its own — and only manifests as observable
+behaviour (re-delivery, no advance) once a real broker round-trip exists. This is FIX-010's lesson inverted:
+there, static analysis caught what human review skimmed past; here, a **behavioural integration test (Layer 4)**
+caught what a **diff-level code-review (Layer 2)** structurally could not reason about. Different layers,
+different blind spots — which is the whole point of defense in depth.
+
+**Fix.** Both sites now commit `msg.Offset + 1` (the next offset to read, per DEC-023). The commit lines carry
+an inline comment tying the `+ 1` to DEC-023 so the intent is not re-broken by a future "simplification", and
+the fix commit message records that this was a Checkpoint-A-era defect, not a regression introduced in Step 3.
+The new `RedeliveryDlqE2ETests` (Layer 4) now assert committed-offset advance directly, closing the gap.
+
+**Lesson.** "Low-risk, reuses the Step-2 pattern" was true of the *routing* logic but masked that the commit
+arithmetic had never been exercised against a broker. A pure-logic step that defers its only behavioural test
+to a later step is carrying unverified behaviour through a checkpoint; the checkpoint sign-off should say so
+explicitly rather than implying the code is proven.
+
+## FIX-015 — Unawaited tasks in the dual-subscription helper and in the redelivery tests (swallowed-exception / fake-green risk) 🔒
+
+**Where:** `RetryingConsumer.ConsumeWithRetriesAsync` (`Flumewright.Client.Resilience`) and
+`RedeliveryDlqE2ETests` (`Flumewright.IntegrationTests`). M3b Step 3/4, caught at **Checkpoint B** by the
+isolated `code-review` sub-agent (Layer 2).
+
+**Symptom — two instances of the same swallowed-exception shape.**
+1. **Helper.** `ConsumeWithRetriesAsync` runs the primary-topic and retry-topic subscriptions concurrently,
+   then does `await Task.WhenAny(primaryTask, retryTask)` and awaits only the completed one; the `finally`
+   cancels the linked CTS but the *other* task is never awaited. If that still-running task faults with
+   anything other than the expected cancellation, the exception is never observed — the second subscription
+   can die invisibly while the helper returns normally, the "half-working" hazard this document warns about.
+2. **Tests.** The background pump tasks (`retryPump`, `verifyPump`, `dlqPump`) were started via `RunPumpAsync`
+   but never awaited at the end of their tests. `RunPumpAsync` rethrows non-cancellation exceptions, but if no
+   one awaits the returned task that rethrow lands nowhere — a pump failure would not fail the test, the
+   classic fake-green shape (FIX-012).
+
+**A related flaky-test smell, same fix batch.** `TransientFailure_GoesToRetryAndAdvancesOffset` blocked the
+consumer on the `sync` message with `await Task.Delay(Timeout.InfiniteTimeSpan, ct)` to stage its final
+assertion. Although bounded by the test's cancellation token (so not an unbounded hang), this is `Task.Delay`
+used as a synchronization primitive — exactly what FIX-008 forbids — and it was not even necessary: the
+retry-arrival assertion it was guarding completes before the block, and head-of-line advance is already proven
+independently by `HeadOfLineUnblock`. The block and the redundant trailing assertion were removed rather than
+suppressed.
+
+**Fix.**
+- **Helper:** after `WhenAny`, await **both** tasks (`Task.WhenAll(primaryTask, retryTask)`) inside a
+  `try/catch (OperationCanceledException)` so the expected cancellation of the loser is swallowed cleanly while
+  any *other* fault from either subscription is surfaced to the caller. Cancellation remains normal shutdown;
+  every other exception propagates (the Layer-1 rule).
+- **Tests:** await all pump tasks at the end of each test so a background failure fails the test. Remove the
+  `Task.Delay(Infinite)` sync trick and the assertion that depended on it; the empty `catch` of
+  `OperationCanceledException` / `RpcException(Cancelled)` in `RunPumpAsync` is the one legitimate
+  cancellation-swallow and is annotated as such.
+
+**Lesson.** The dual-subscription helper reproduced FIX-013's reader-leak shape one layer up: whenever two
+long-running tasks share a lifetime, "await the one that finished" is not enough — the survivor must be awaited
+too, or its faults vanish. The reviewer caught both the production instance and the test instance in one pass,
+which is why the `code-review` checklist's "unawaited Task / fire-and-forget" item now explicitly covers
+`WhenAny` survivors and background test pumps, not just bare `Task.Run`.

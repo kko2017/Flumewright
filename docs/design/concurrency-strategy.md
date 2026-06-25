@@ -84,6 +84,7 @@ Disciplined patterns in the source itself:
 - **Start-offset resolution is synchronous and atomic at entry**: resolving a relative start position (LATEST → "from now") reads the high watermark *under the partition lock, on the caller's thread, before any background reader is spawned* — so no publish can slip between reading the watermark and pinning it (atomic), and the resolved offset is observable the moment subscribe returns (synchronous). Resolving it later, inside the background reader, was the cause of FIX-013.
 - **Fan-in lives in one place**: the partition fan-in (Channel + per-partition reader + completion) is the store's single responsibility; callers (the service layer) never re-implement it. One implementation means the lost-wakeup and atomicity guarantees are made once, not duplicated (the duplication was the root of FIX-013).
 - **Cancellation is normal shutdown**: `OperationCanceledException` is caught and treated as a clean stop; other exceptions are *not* swallowed but propagated to the subscriber (via channel completion with the exception).
+- **Shared-lifetime tasks are all awaited**: when two long-running tasks share a lifetime (e.g. the dual-subscription retry helper), awaiting only the one that finished (`WhenAny`) is not enough — the survivor is awaited too (cancellation swallowed, other faults propagated), or its exceptions vanish. This is FIX-013's reader-leak rule applied one layer up (FIX-015).
 
 ### Layer 2 — Human checkpoints + an isolated reviewer sub-agent *— in place*
 Tooling: **risk-based checkpoints (DEC-013)** + the **`code-review` skill** (an isolated Gemini sub-agent).
@@ -139,13 +140,34 @@ Concurrency defense is not theoretical here; the layers have already paid off:
   (Layer 2) then caught a reader leak. A bug whose real cause was a duplicated-implementation smell, not a
   single wrong line.
 
+- **FIX-014 — off-by-one offset commit in the retry helper.** `RetryingConsumer` committed `msg.Offset`
+  instead of `msg.Offset + 1`, so a resumed consumer re-read the message it had just processed and the
+  partition never advanced (DEC-023: committed = the *next* offset to read). It passed Checkpoint A because
+  Step 2 had no integration test yet — the defect is invisible in a diff and only shows as behaviour over a
+  real broker. Caught by the **behavioural integration test** (Layer 4) in Step 4, not by the diff-level
+  **code-review** (Layer 2) that signed off Step 2. The mirror image of FIX-010: there mechanical analysis
+  caught what a human skimmed; here a behavioural test caught what a diff review structurally cannot reason
+  about.
+- **FIX-015 — unawaited survivor task (helper) + unawaited pumps (tests).** `ConsumeWithRetriesAsync` ran
+  two subscriptions and, after `Task.WhenAny`, awaited only the finished one — the still-running survivor's
+  faults were never observed (the "half-working" swallowed-exception shape, FIX-013 reproduced one layer up).
+  The same shape appeared in the tests, whose background pumps were never awaited (a pump failure could not
+  fail the test — fake-green, FIX-012). Both were caught in a single pass by the **isolated reviewer**
+  (Layer 2) at Checkpoint B; the fix awaits both tasks (cancellation swallowed, other faults propagated) and
+  awaits every pump. A `Task.Delay(Infinite)`-as-sync trick found in the same review was removed, not
+  suppressed (FIX-008). The `code-review` checklist's fire-and-forget item now explicitly covers `WhenAny`
+  survivors and background test pumps.
+
 The lesson that shapes this whole document: **these bugs were caught by different layers, and no single
 layer would have caught them all.** Human reasoning catches semantic/concurrency bugs a person can think
 through (FIX-009, FIX-013); mechanical analysis catches the empty-catch a person skims over (FIX-010); the
 isolated reviewer catches both a semantics call it knows to escalate (FIX-011) and a hollow test the author
-is blind to (FIX-012). And when a review finds a gap in its own checklist, that gap becomes a permanent
-check (FIX-012 → the fake-green checklist item). Neither layer alone is enough — which is why there are five,
-and why they feed each other.
+is blind to (FIX-012); and a behavioural integration test catches an off-by-one a diff review cannot see
+(FIX-014), while the isolated reviewer catches the swallowed-exception shape that the author reproduced one
+layer up (FIX-015). And when a review finds a gap in its own checklist, that gap becomes a permanent
+check (FIX-012 → the fake-green checklist item; FIX-015 → `WhenAny` survivors and test pumps under the
+fire-and-forget item). Neither layer alone is enough — which is why there are five, and why they feed each
+other.
 
 ---
 
