@@ -98,16 +98,21 @@ public class GroupCoordinatorTests
     [Fact]
     public async Task ConcurrentMembershipChanges_KeepGenerationMonotonic_AndTableConsistent()
     {
-        // Real-contention test: exercises the lock. Will throw or fail assertions if the lock is removed.
-        int numThreads = 10;
+        // Real-contention test: exercises the lock via a thundering herd. 
+        // Will throw or fail assertions if the lock is removed.
+        int numThreads = 20;
         int operationsPerThread = 100;
         var tasks = new Task[numThreads];
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         
         for (int i = 0; i < numThreads; i++)
         {
             int threadId = i;
-            tasks[i] = Task.Run(() => 
+            tasks[i] = Task.Run(async () => 
             {
+#pragma warning disable VSTHRD003 // Avoid awaiting foreign Tasks
+                await gate.Task; // Wait for the start signal
+#pragma warning restore VSTHRD003 // Avoid awaiting foreign Tasks
                 for (int j = 0; j < operationsPerThread; j++)
                 {
                     string memberId = $"member-{threadId}-{j}";
@@ -116,12 +121,16 @@ public class GroupCoordinatorTests
             });
         }
         
-        await Task.WhenAll(tasks);
+        // Release the thundering herd all at once
+        gate.SetResult();
+        
+        // Bounded wait to prevent infinite hang if a deadlock occurs
+        await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(5));
         
         var state = _coordinator.GetGroupState(GroupId);
         Assert.NotNull(state);
         
-        // 1000 unique members added means generation must be 1000 and count 1000
+        // Assert exactly what the final state must be: monotonic generation and count
         Assert.Equal(numThreads * operationsPerThread, state.Members.Count);
         Assert.Equal(numThreads * operationsPerThread, state.Generation);
     }
