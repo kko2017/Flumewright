@@ -49,7 +49,7 @@ public sealed class RetryingConsumer
 
             if (success)
             {
-                // On success, commit the offset + 1 to advance the partition
+                // On success, commit the offset + 1 to advance the partition (next offset to read, per DEC-023)
                 await _subscriber.CommitOffsetAsync(groupId, topic, msg.Partition, msg.Offset + 1, ct);
             }
         }
@@ -65,10 +65,12 @@ public sealed class RetryingConsumer
         CancellationToken ct = default)
     {
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        Task? primaryTask = null;
+        Task? retryTask = null;
         try
         {
-            var primaryTask = ConsumeGroupAsync(topic, groupId, primaryPartitions, messageHandler, reset, linkedCts.Token);
-            var retryTask = ConsumeGroupAsync($"{topic}.retry", groupId, retryPartitions, messageHandler, reset, linkedCts.Token);
+            primaryTask = ConsumeGroupAsync(topic, groupId, primaryPartitions, messageHandler, reset, linkedCts.Token);
+            retryTask = ConsumeGroupAsync($"{topic}.retry", groupId, retryPartitions, messageHandler, reset, linkedCts.Token);
 
             var completedTask = await Task.WhenAny(primaryTask, retryTask);
             await completedTask; // Propagate exceptions if any
@@ -76,6 +78,14 @@ public sealed class RetryingConsumer
         finally
         {
             await linkedCts.CancelAsync();
+            if (primaryTask != null && retryTask != null)
+            {
+                try
+                {
+                    await Task.WhenAll(primaryTask, retryTask);
+                }
+                catch (OperationCanceledException) { }
+            }
         }
     }
 
@@ -128,7 +138,7 @@ public sealed class RetryingConsumer
         // 1. Publish the outgoing copy to the retry/dlq topic
         await _publisher.PublishAsync(destinationTopic, originalMsg.Payload, null, newHeaders, null, ct);
 
-        // 2. Commit the original offset + 1 so the original partition can progress.
+        // 2. Commit the original offset + 1 so the original partition can progress (next offset to read, per DEC-023).
         // This publish-then-commit boundary is explicitly non-atomic (at-least-once duplication accepted).
         await _subscriber.CommitOffsetAsync(groupId, consumedTopic, originalMsg.Partition, originalMsg.Offset + 1, ct);
     }
