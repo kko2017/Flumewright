@@ -57,8 +57,17 @@ silence is the danger — and the reason a single layer of review is not enough.
 | **Deadlock** | Holding a lock across an `await`, or lock-ordering inversions → threads wait on each other forever. |
 | **Flaky test** | A test that synchronizes on timing (`Sleep`/`Delay`) or asserts a tight value on a probabilistic result → passes and fails without code changes, destroying trust in CI (worse than no test). |
 | **Fake-green test** | A test that passes *every* time but does not verify what it claims — e.g. a "concurrency" test that creates no real contention (sequential dispatch, or a TCS gate without `RunContinuationsAsynchronously`), so it would pass even with the lock removed (this is exactly FIX-012). More dangerous than flaky: it never draws attention. |
+| **Non-atomic cross-operation boundary** *(accepted, not a bug)* | Two separate operations that cannot be made atomic — e.g. the M3b helper's *publish-to-retry-then-commit-original* — leave a crash window between them: resume re-runs the first, so the message can appear twice. This is **at-least-once duplication**, an accepted contract, not a defect (see below). |
 
-These are the failure modes the layers below are designed to catch.
+These are the failure modes the layers below are designed to catch. The last row is different in kind from
+the others: it is not a hazard to *eliminate* but a trade-off to *accept consciously*. Where two operations
+cannot be bound atomically (no distributed transaction), the project does **not** pretend otherwise — it
+chooses at-least-once with possible duplicates and pushes the de-duplication responsibility to the consumer
+(idempotency). The concurrency discipline here is the opposite of the others: instead of adding a lock to
+make something atomic, you **document the non-atomic boundary as a contract** so no one later "fixes" it with
+a fake transaction. M3b's `publish → commit` is exactly this (the duplication trade-off is recorded in the
+[m3b design note](m3b-redelivery-dlq.md) and FIX-014's neighbourhood); exactly-once is explicitly not
+planned.
 
 ---
 

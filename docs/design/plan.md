@@ -1,4 +1,4 @@
-# Distributed Message Bus — Execution Plan v0.8
+# Distributed Message Bus — Execution Plan v0.9
 
 > Codename: **Flumewright** (short alias: **fw** — used in the proto package `fw.v1`, etc.)
 > Stack: C# / .NET 8.0 (LTS) / gRPC (HTTP/2) / Protobuf
@@ -112,7 +112,7 @@ The broker **never deserializes** user message content.
 | Feature | Phase 1 | Phase 2 | Notes |
 |---------|---------|---------|-------|
 | Partitioning | **M2** — topic→N partitions, hash/round-robin routing, **per-partition append-only log + per-partition offset**, subscribers consume by **pulling from their offset (cursor)**, parallel per-partition reads | (count change) | Per-partition ordering; a subscriber reads ALL partitions of a topic; partition count fixed per topic in Phase 1 |
-| Consumer group | **M3** — in-group partition assignment + distribution (static). Split: **M3a** static assignment + manual batch commit + resume (*done, merged*); **M3b** redelivery + DLQ; **M3c** rebalance | Rebalancing maturity | Splits a topic across group members; built on top of M2's partitions, NOT part of M2 |
+| Consumer group | **M3** — in-group partition assignment + distribution (static). Split: **M3a** static assignment + manual batch commit + resume (*done, merged*); **M3b** redelivery + DLQ (*done, merged*); **M3c** rebalance | Rebalancing maturity | Splits a topic across group members; built on top of M2's partitions, NOT part of M2 |
 | mTLS certificate security | ✅ Required | Cert rotation / CRL | Mutual authentication |
 | Schema Registry | Minimal interface only | Full implementation (validation/compatibility) | Payload stays opaque; schema_id offers optional type safety |
 | Observability (Metrics/Tracing/Logging) | Basic metrics + structured logging | Distributed tracing (OpenTelemetry) | Prometheus-compatible metrics recommended. Logging: **Serilog** behind `Microsoft.Extensions.Logging` (`ILogger<T>`), rolling file sink (daily + size cap + retention). Wired at M6; revisit async sink (`Serilog.Sinks.Async`) at M5/M6 for the 100K hot path. Phase 0 only: `.gitignore` `logs/` and `*.log`. |
@@ -388,8 +388,8 @@ docs/
 - M2: Topic/partition + **per-partition append-only log + offset-based consumption (pull by cursor)** + routing, parallel per-partition reads.
 - M3: Consumer group distribution + at-least-once (**ack via offset commit**) + redelivery + DLQ. Split into
   three sub-milestones: **M3a** (static assignment + manual batch commit + resume = the at-least-once happy
-  path) — *complete, merged*; **M3b** (redelivery + DLQ = the failure path) — next; **M3c** (rebalance /
-  dynamic assignment).
+  path) — *complete, merged*; **M3b** (redelivery + DLQ = the failure path) — *complete, merged*; **M3c**
+  (rebalance / dynamic assignment) — next.
 - M4: mTLS (mutual certificates), certgen tool. **Follow the Section 7.1 certgen checklist (CA BasicConstraints, server SAN, client EKU, single CA chain).**
 - M5: Bidi/server streaming + batching + backpressure for 100K throughput.
 - M6: Basic metrics/logging + first pass of unit/integration/load tests.
@@ -427,3 +427,4 @@ docs/
 | v0.5 | M1 Step 5 done (e2e integration test passes → M1 functional phase complete). Refined §10.2 with the implementation note: the in-process host is built directly via `WebApplication` in an `IAsyncLifetime` fixture, not `WebApplicationFactory` (which conflicts with the real-Kestrel `Program.cs`); bind `IPAddress.Loopback:0` for a dynamic h2c port; the `Http2UnencryptedSupport` switch is unnecessary on .NET 8 (decision-and-fix-log FIX-005 / DEC-008). |
 | v0.6 | M1 milestone closed (merged to main via merge commit; no tag — that is the Phase 1/M6 marker). M1 wrap: dev container adoption (DEC-009/010), pre-commit exec-bit fix (FIX-007), zoom-out review (DEC-011), main branch-protection ruleset (DEC-012). **Clarified the M2/M3 split in §4:** partitioning is M2 (topic→N partitions, routing, per-partition offset + bounded channel, parallel consume loops; a subscriber gets all partitions; count fixed per topic), consumer-group distribution is M3 (built on top of M2) — previously bundled as one "skeleton" row. Bounded-channel backpressure signaling stays in M5 (FIX-002). |
 | v0.8 | **M3 split into M3a/M3b/M3c; M3a complete.** §1 now states the Kafka-inspired design explicitly. M3a (static consumer-group assignment + manual batch commit + resume-from-committed = at-least-once happy path) is implemented and merged. Key outcomes recorded in the decision-and-fix log: **DEC-023** (committed offset = next offset to read, Kafka-style; resume from `committed` directly), **FIX-011** (commit rejected for unknown topic / out-of-range partition), **FIX-012** (fake-green concurrency tests — fed back into the code-review checklist), **FIX-013** (fan-in unified in the store; LATEST resolved synchronously-at-entry under the lock). §14 roadmap updated to show the M3a/b/c split. M3b (redelivery + DLQ) is next. |
+| v0.9 | **M3b complete (redelivery + DLQ); merged.** The failure path is done: a non-blocking, policy-driven SDK helper (`Flumewright.Client.Resilience`) retries failed messages via a `{topic}.retry` topic and quarantines exhausted/poison ones in `{topic}.dlq`, all over plain topics — the broker is untouched. Attempt count + original metadata travel in headers; publish-then-commit is non-atomic by design (at-least-once duplication accepted, idempotency is the consumer's responsibility). Key outcomes in the decision-and-fix log: **FIX-014** (helper committed the processed offset instead of `offset + 1` per DEC-023 → infinite redelivery; a Checkpoint-A-era defect surfaced only by Step-4 integration tests, not by diff review), **FIX-015** (unawaited survivor task in the dual-subscription helper + unawaited test pumps → swallowed-exception / fake-green risk; a `Task.Delay`-as-sync trick removed). Concurrency-strategy doc gained the non-atomic-boundary hazard + the shared-lifetime-task rule; study-notes §9.5 placeholders filled (error classification, extension-point design). Deferred as planned: timed/multi-stage backoff + blocking retry → Phase 2; rebalance → M3c. M3c (rebalance / dynamic assignment) is next. |
