@@ -58,6 +58,8 @@ silence is the danger — and the reason a single layer of review is not enough.
 | **Flaky test** | A test that synchronizes on timing (`Sleep`/`Delay`) or asserts a tight value on a probabilistic result → passes and fails without code changes, destroying trust in CI (worse than no test). |
 | **Fake-green test** | A test that passes *every* time but does not verify what it claims — e.g. a "concurrency" test that creates no real contention (sequential dispatch, or a TCS gate without `RunContinuationsAsynchronously`), so it would pass even with the lock removed (this is exactly FIX-012). More dangerous than flaky: it never draws attention. |
 | **Non-atomic cross-operation boundary** *(accepted, not a bug)* | Two separate operations that cannot be made atomic — e.g. the M3b helper's *publish-to-retry-then-commit-original* — leave a crash window between them: resume re-runs the first, so the message can appear twice. This is **at-least-once duplication**, an accepted contract, not a defect (see below). |
+| **Membership-table races** *(M3c)* | The group coordinator's membership table is shared mutable state touched by joins, leaves, the session-timeout sweeper, and (later) the commit-path generation check. Concurrent membership changes that are not serialized can tear the table or lose updates; a sweeper deciding "dead" while a heartbeat arrives can double-evict or revive a member. Guarded by the coordinator's own lock + check-then-act on every membership change. |
+| **Non-monotonic generation** *(M3c)* | The coordinator's generation token must increase by exactly one per membership change, atomically with that change. If the bump is not in the same critical section as the change (a race on the counter), two rebalances can collide on one generation or skip one — and the generation fence (which rejects stale commits) silently stops protecting. Generation monotonicity-under-contention is asserted by a real-contention test (start-gate, would fail with the lock removed). |
 
 These are the failure modes the layers below are designed to catch. The last row is different in kind from
 the others: it is not a hazard to *eliminate* but a trade-off to *accept consciously*. Where two operations
@@ -82,7 +84,7 @@ hazard has to pass through **all five** to reach `main`.
 | 2 | Human checkpoints + isolated AI reviewer | risk-based checkpoints (DEC-013), `code-review` skill (Gemini sub-agent) | in place |
 | 3 | Static analysis (mechanical, build/CI) | **Roslyn analyzers** (CA1031, **VSTHRD threading**), **SonarCloud**, **CodeQL** | in place |
 | 4 | Concurrency tests (behavioral) | **xUnit** concurrency tests, flaky-test discipline | in place |
-| 5 | Systematic concurrency exploration | **Microsoft Coyote** | planned (after M3) |
+| 5 | Systematic concurrency exploration | **Microsoft Coyote** | being introduced in M3c |
 
 
 ### Layer 1 — Code patterns (prevention at write time) *— in place*
@@ -112,9 +114,9 @@ Tooling: **xUnit** concurrency tests + flaky-test discipline.
 - **Concurrency unit tests**: e.g. 1,000 concurrent appends asserting offsets are unique and contiguous — exercising lock integrity and atomic state.
 - **Flaky-test discipline**: deterministic properties get tight assertions; probabilistic ones get generous ranges; every async wait has a bounded timeout so a failure fails fast instead of hanging (FIX-008). A flaky test is treated as a defect, not noise.
 
-### Layer 5 — Systematic concurrency testing (Microsoft Coyote) *— planned, after M3*
+### Layer 5 — Systematic concurrency testing (Microsoft Coyote) *— being introduced in M3c*
 Tooling: **Microsoft Coyote**.
-- Coyote rewrites and controls task scheduling to **deterministically explore interleavings**, reproducing races and deadlocks that ordinary tests hit only by luck. Reserved for after M3, when consumer-group assignment and offset-commit concurrency make the schedule space large enough to need it. This is the answer to "as the code grows, these bugs get harder to find by reading": a machine explores the schedules a human or an ordinary test never will.
+- Coyote rewrites and controls task scheduling to **deterministically explore interleavings**, reproducing races and deadlocks that ordinary tests hit only by luck. It was reserved for the point where consumer-group assignment and offset-commit concurrency make the schedule space large enough to need it — that point is **M3c (rebalance)**, which adds the group coordinator: membership, the session-timeout sweeper, generation fencing, and handover, all racing in-flight processing. M3c is where Coyote is introduced (the coordinator's concurrency unit tests are M3c's Step 8). Scope note: Coyote controls **in-process** Task scheduling, so it targets the coordinator component directly, not the gRPC/Kestrel host — the rewrite set is the coordinator assembly + its deps, and the integration tests (over real gRPC) remain a separate layer. This is the answer to "as the code grows, these bugs get harder to find by reading": a machine explores the schedules a human or an ordinary test never will.
 
 ---
 
@@ -196,5 +198,6 @@ the concurrency passages.
 
 ---
 
-*Layer 5 (Coyote) is still planned — marked above — and will be filled in after M3. Layer 3 is now fully in
-place (threading analyzers landed in DEC-021 stage 2). The strategy itself is in force now.*
+*Layer 5 (Coyote) is being introduced in M3c — the rebalance milestone whose coordinator concurrency is what
+it was reserved for; its concurrency unit tests land in M3c's Step 8. Layer 3 is fully in place (threading
+analyzers landed in DEC-021 stage 2). The strategy itself is in force now.*
