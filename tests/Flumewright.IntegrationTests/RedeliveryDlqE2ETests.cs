@@ -25,6 +25,8 @@ public sealed class RedeliveryDlqE2ETests : IClassFixture<BrokerAppFactory>
                 await action();
             }
 #pragma warning disable CA1031
+            // Expected cancellation during test shutdown — the one legitimate swallow (FIX-015).
+            // Any other exception is logged and rethrown below, so real failures still surface once the pump is awaited.
             catch (OperationCanceledException) { }
             catch (RpcException ex) when (ex.StatusCode == StatusCode.Cancelled) { }
             catch (Exception ex)
@@ -51,6 +53,9 @@ public sealed class RedeliveryDlqE2ETests : IClassFixture<BrokerAppFactory>
         var ack = await publisher.PublishAckAsync(topic, Encoding.UTF8.GetBytes("fail"), partitionKey: key, ct: cts.Token);
         var partition = ack.Partition;
 
+        // Scaffold the retry/dlq topic: it does not exist until something is published to it
+        // (no pre-create-empty-topic API — see FIX-011), and a subscriber cannot attach to a
+        // non-existent topic. This dummy is filtered out by the `continue` guard below.
         await publisher.PublishAckAsync($"{topic}.retry", Encoding.UTF8.GetBytes("dummy"), ct: cts.Token);
 
         using var subscriber = new FlumewrightSubscriber(address);

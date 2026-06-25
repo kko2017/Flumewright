@@ -84,6 +84,8 @@ public sealed class RetryingConsumer
                 {
                     await Task.WhenAll(primaryTask, retryTask);
                 }
+                // Expected: the loser task is cancelled via the linked CTS after WhenAny completes.
+                // Only this cancellation is swallowed; any other fault from either subscription still propagates (FIX-015).
                 catch (OperationCanceledException) { }
             }
         }
