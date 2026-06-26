@@ -223,4 +223,9 @@ internal class MessageBusService : MessageBus.MessageBusBase
             return new SyncGroupResponse { Ok = false, Reason = "Rebalance in progress" };
         }
     }
+    public override Task<LeaveGroupResponse> LeaveGroup(LeaveGroupRequest request, ServerCallContext context)
+    {
+        _groupCoordinator.RemoveMember(request.GroupId, request.MemberId);
+        return Task.FromResult(new LeaveGroupResponse { Ok = true });
+    }
 }
