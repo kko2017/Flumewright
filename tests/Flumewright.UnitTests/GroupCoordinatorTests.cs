@@ -67,6 +67,19 @@ public class GroupCoordinatorTests
     }
 
     [Fact]
+    public async Task Heartbeat_WithStaleGeneration_Rejected()
+    {
+        await _coordinator.JoinGroupAsync(GroupId, "member1", new[] { "topic1" }, TimeSpan.FromMilliseconds(10), CancellationToken.None);
+        var state = _coordinator.GetGroupState(GroupId);
+        int currentGen = state!.Generation;
+
+        _coordinator.RemoveMember(GroupId, "member1");
+
+        bool ok = _coordinator.RecordHeartbeat(GroupId, "member1", currentGen, out _);
+        Assert.False(ok);
+    }
+
+    [Fact]
     public async Task Lifecycle_TransitionsSuccessfully()
     {
         var res1 = await _coordinator.JoinGroupAsync(GroupId, "m1", new[] { "t1" }, TimeSpan.FromMilliseconds(50), CancellationToken.None);

@@ -112,7 +112,12 @@ public class MessageBusService : MessageBus.MessageBusBase
     public override async Task<CommitAck> CommitOffset(CommitRequest request, ServerCallContext context)
     {
         var (ok, reason) = await _offsetStore.CommitOffsetAsync(
-            request.GroupId, request.Topic, request.Partition, request.Offset, context.CancellationToken);
+            request.GroupId, 
+            request.Topic, 
+            request.Partition, 
+            request.Offset,
+            request.Generation,
+            context.CancellationToken);
 
         return new CommitAck
         {

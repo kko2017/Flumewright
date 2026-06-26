@@ -13,12 +13,15 @@ public sealed class InMemoryCommittedOffsetStore : ICommittedOffsetStore
     // Lock for range + backwards-commit check + update (no check-then-act)
     private readonly object _lock = new();
 
-    public InMemoryCommittedOffsetStore(ITopicStore topicStore)
+    private readonly IGroupCoordinator? _coordinator;
+
+    public InMemoryCommittedOffsetStore(ITopicStore topicStore, IGroupCoordinator? coordinator = null)
     {
         _topicStore = topicStore;
+        _coordinator = coordinator;
     }
 
-    public ValueTask<(bool Ok, string Reason)> CommitOffsetAsync(string groupId, string topic, int partition, long offset, CancellationToken ct = default)
+    public ValueTask<(bool Ok, string Reason)> CommitOffsetAsync(string groupId, string topic, int partition, long offset, int generation = 0, CancellationToken ct = default)
     {
         if (offset < 0)
         {
@@ -29,6 +32,14 @@ public sealed class InMemoryCommittedOffsetStore : ICommittedOffsetStore
 
         lock (_lock)
         {
+            if (generation > 0 && _coordinator != null)
+            {
+                var state = _coordinator.GetGroupState(groupId);
+                if (state != null && state.Generation != generation)
+                {
+                    return new ValueTask<(bool, string)>((false, "Fenced: stale generation"));
+                }
+            }
             // Reading the watermark MUST be inside the lock. If read before the lock, a message 
             // could be published (increasing the watermark) before we acquire the lock, causing 
             // a valid commit of the new watermark to be falsely rejected as out-of-range against 
