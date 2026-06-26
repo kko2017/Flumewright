@@ -5,7 +5,8 @@ namespace Flumewright.Broker.Core;
 public enum GroupState
 {
     Stable,
-    Rebalancing
+    PreparingRebalance,
+    CompletingRebalance
 }
 
 public record TopicPartition(string Topic, int Partition);

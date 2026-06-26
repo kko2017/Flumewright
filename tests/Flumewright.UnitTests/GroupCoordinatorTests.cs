@@ -21,13 +21,13 @@ public class GroupCoordinatorTests
         var result = await task;
         
         Assert.Equal(1, result.Generation);
-        Assert.Equal(GroupState.Rebalancing, result.State);
+        Assert.Equal(GroupState.CompletingRebalance, result.State);
         Assert.True(result.IsLeader);
 
         var state = _coordinator.GetGroupState(GroupId);
         Assert.NotNull(state);
         Assert.Equal(1, state.Generation);
-        Assert.Equal(GroupState.Rebalancing, state.State);
+        Assert.Equal(GroupState.CompletingRebalance, state.State);
         Assert.Single(state.Members);
     }
 
@@ -42,7 +42,7 @@ public class GroupCoordinatorTests
         Assert.True(removed);
         var state = _coordinator.GetGroupState(GroupId);
         Assert.Equal(2, state!.Generation);
-        Assert.Equal(GroupState.Rebalancing, state.State);
+        Assert.Equal(GroupState.PreparingRebalance, state.State);
         Assert.Empty(state.Members);
     }
 
@@ -84,7 +84,7 @@ public class GroupCoordinatorTests
     {
         var res1 = await _coordinator.JoinGroupAsync(GroupId, "m1", new[] { "t1" }, TimeSpan.FromMilliseconds(50), CancellationToken.None);
         Assert.Equal(1, res1.Generation);
-        Assert.Equal(GroupState.Rebalancing, res1.State);
+        Assert.Equal(GroupState.CompletingRebalance, res1.State);
         
         var assignments = new Dictionary<string, IReadOnlyList<TopicPartition>>
         {
@@ -183,7 +183,7 @@ public class GroupCoordinatorTests
 
         state = _coordinator.GetGroupState(GroupId);
         Assert.Equal(2, state!.Generation);
-        Assert.Equal(GroupState.Rebalancing, state.State);
+        Assert.Equal(GroupState.PreparingRebalance, state.State);
         Assert.Empty(state.Members);
     }
 
@@ -230,7 +230,7 @@ public class GroupCoordinatorTests
         state = _coordinator.GetGroupState(GroupId);
         Assert.NotNull(state);
         
-        bool sweepWon = state.Generation == gen + 1 && state.State == GroupState.Rebalancing && state.Members.Count == 0;
+        bool sweepWon = state.Generation == gen + 1 && state.State == GroupState.PreparingRebalance && state.Members.Count == 0;
         bool heartbeatWon = state.Generation == gen && state.State == GroupState.Stable && state.Members.Count == 1;
 
         Assert.True(sweepWon || heartbeatWon, $"Invalid outcome: Gen={state.Generation}, State={state.State}, Members={state.Members.Count}");
