@@ -34,8 +34,8 @@ public sealed class InMemoryCommittedOffsetStore : ICommittedOffsetStore
         {
             if (generation > 0 && _coordinator != null)
             {
-                var state = _coordinator.GetGroupState(groupId);
-                if (state != null && state.Generation != generation)
+                var currentGen = _coordinator.GetGroupGeneration(groupId);
+                if (currentGen != null && currentGen.Value != generation)
                 {
                     return new ValueTask<(bool, string)>((false, "Fenced: stale generation"));
                 }

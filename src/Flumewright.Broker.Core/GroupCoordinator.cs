@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,7 +12,7 @@ internal record RebalanceOutcome(int Generation, string LeaderId, IReadOnlyList<
 public class GroupCoordinator : IGroupCoordinator
 {
     private readonly object _lock = new();
-    private readonly Dictionary<string, ConsumerGroup> _groups = new();
+    private readonly ConcurrentDictionary<string, ConsumerGroup> _groups = new();
 
     private ConsumerGroup GetOrAddGroup(string groupId)
     {
@@ -274,6 +275,15 @@ public class GroupCoordinator : IGroupCoordinator
         }
     }
 
+    public int? GetGroupGeneration(string groupId)
+    {
+        if (_groups.TryGetValue(groupId, out var group))
+        {
+            return group.Generation;
+        }
+        return null;
+    }
+
     private bool TopicsEqual(IReadOnlyList<string> a, IReadOnlyList<string> b)
     {
         if (a.Count != b.Count) return false;
@@ -287,7 +297,12 @@ public class GroupCoordinator : IGroupCoordinator
     private class ConsumerGroup
     {
         public string GroupId { get; }
-        public int Generation { get; set; }
+        private int _generation;
+        public int Generation 
+        { 
+            get => Volatile.Read(ref _generation); 
+            set => Volatile.Write(ref _generation, value); 
+        }
         public GroupState State { get; set; }
         public string? LeaderId { get; set; }
         public Dictionary<string, GroupMember> Members { get; } = new();

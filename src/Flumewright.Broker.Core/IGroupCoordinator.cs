@@ -33,4 +33,5 @@ public interface IGroupCoordinator
     void SweepDeadMembers(TimeSpan sessionTimeout);
 
     GroupStateSnapshot? GetGroupState(string groupId);
+    int? GetGroupGeneration(string groupId);
 }
