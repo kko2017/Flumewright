@@ -119,17 +119,23 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
 
         var join2Task = client.JoinGroupAsync(new JoinGroupRequest { GroupId = groupId, MemberId = "m2", Topics = { topic } }, cancellationToken: cts.Token).ResponseAsync;
         
-        await Task.Delay(500);
+        while (!cts.IsCancellationRequested)
+        {
+            var ping = await client.HeartbeatAsync(new HeartbeatRequest { GroupId = groupId, MemberId = "m1", Generation = gen1 }, cancellationToken: cts.Token);
+            if (ping.Code == GroupErrorCode.GroupFenced)
+            {
+                break;
+            }
+            await Task.Delay(100, cts.Token);
+        }
 
         var commitRes = await client.CommitOffsetAsync(new CommitRequest { GroupId = groupId, Topic = topic, Partition = 0, Offset = 1, Generation = gen1 }, cancellationToken: cts.Token);
         commitRes.Ok.Should().BeFalse();
-        commitRes.Reason.Should().ContainEquivalentOf("fenced");
+        commitRes.Code.Should().Be(GroupErrorCode.GroupFenced);
         
         var hbRes = await client.HeartbeatAsync(new HeartbeatRequest { GroupId = groupId, MemberId = "m1", Generation = gen1 }, cancellationToken: cts.Token);
         hbRes.Ok.Should().BeFalse();
-        
-        // Asserting what the broker currently does, so the test passes, but exposes the defect with FlumewrightGroupConsumer
-        hbRes.Reason.Should().Contain("Invalid generation or member unknown");
+        hbRes.Code.Should().Be(GroupErrorCode.GroupFenced);
     }
 
     [Fact]
@@ -152,6 +158,7 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes("msg-1"), partitionKey: new byte[] { 0 }, ct: cts.Token);
         await iter.MoveNextAsync();
 
+        // Legitimate use of Task.Delay (integration-only, real timeout): testing actual wall-clock session timeout against real broker
         await Task.Delay(12000, cts.Token);
 
         await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes("msg-2"), partitionKey: new byte[] { 0 }, ct: cts.Token);
@@ -177,6 +184,7 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         var gen = join1.Generation;
         await client.SyncGroupAsync(new SyncGroupRequest { GroupId = groupId, MemberId = "dead", Generation = gen, Assignments = { new MemberAssignment { MemberId = "dead", Topic = topic, Partitions = { 0 } } } }, cancellationToken: cts.Token);
         
+        // Legitimate use of Task.Delay (integration-only, real timeout): testing actual wall-clock session timeout against real broker
         await Task.Delay(12000, cts.Token);
 
         using var c2 = new FlumewrightGroupConsumer(address, groupId, "member-2");
@@ -220,20 +228,22 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
 
         Func<Task> act = async () =>
         {
-            try {
-                await iter.MoveNextAsync();
-            }
-            finally {
-                await iter.DisposeAsync();
-            }
+            await iter.MoveNextAsync();
         };
         
-        var ex = await act.Should().ThrowAsync<Exception>();
-        
-        var actualEx = (Exception)ex.Subject.Single();
-        if (actualEx is AggregateException agg) actualEx = agg.InnerException!;
-        
-        actualEx.Should().Match<Exception>(e => e is RpcException || (e.InnerException != null && e.InnerException is RpcException));
+        try
+        {
+            var ex = await act.Should().ThrowAsync<Exception>();
+            
+            var actualEx = (Exception)ex.Subject.Single();
+            if (actualEx is AggregateException agg) actualEx = agg.InnerException!;
+            
+            actualEx.Should().Match<Exception>(e => e is RpcException || (e.InnerException != null && e.InnerException is RpcException));
+        }
+        finally
+        {
+            await iter.DisposeAsync();
+        }
     }
 
     private async Task ConsumeAsync(FlumewrightGroupConsumer consumer, string topic, IReadOnlyDictionary<string, int> partitionCounts, IAssignmentStrategy strategy, List<ReceivedMessage> targetList, CancellationToken ct)
