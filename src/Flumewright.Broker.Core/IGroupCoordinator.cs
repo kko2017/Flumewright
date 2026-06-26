@@ -29,7 +29,7 @@ internal interface IGroupCoordinator
     
     
     // Heartbeat
-    bool RecordHeartbeat(string groupId, string memberId, int expectedGeneration, out bool rebalanceInProgress);
+    Flumewright.Protocol.GroupErrorCode RecordHeartbeat(string groupId, string memberId, int expectedGeneration);
     void SweepDeadMembers(TimeSpan sessionTimeout);
 
     GroupStateSnapshot? GetGroupState(string groupId);

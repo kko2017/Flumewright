@@ -214,18 +214,20 @@ internal class GroupCoordinator : IGroupCoordinator
         }
     }
 
-    public bool RecordHeartbeat(string groupId, string memberId, int expectedGeneration, out bool rebalanceInProgress)
+    public Flumewright.Protocol.GroupErrorCode RecordHeartbeat(string groupId, string memberId, int expectedGeneration)
     {
-        rebalanceInProgress = false;
         lock (_lock)
         {
-            if (!_groups.TryGetValue(groupId, out var group)) return false;
-            if (!group.Members.TryGetValue(memberId, out var member)) return false;
-            if (group.Generation != expectedGeneration) return false;
+            if (!_groups.TryGetValue(groupId, out var group)) return Flumewright.Protocol.GroupErrorCode.GroupUnknownMember;
+            if (!group.Members.TryGetValue(memberId, out var member)) return Flumewright.Protocol.GroupErrorCode.GroupUnknownMember;
+            if (group.Generation != expectedGeneration) return Flumewright.Protocol.GroupErrorCode.GroupFenced;
 
             member.LastHeartbeat = DateTimeOffset.UtcNow;
-            rebalanceInProgress = group.State == GroupState.PreparingRebalance || group.State == GroupState.CompletingRebalance;
-            return true;
+            if (group.State == GroupState.PreparingRebalance || group.State == GroupState.CompletingRebalance)
+            {
+                return Flumewright.Protocol.GroupErrorCode.GroupRebalanceInProgress;
+            }
+            return Flumewright.Protocol.GroupErrorCode.GroupOk;
         }
     }
 

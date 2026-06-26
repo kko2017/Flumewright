@@ -60,10 +60,9 @@ public class GroupCoordinatorTests
     {
         await _coordinator.JoinGroupAsync(GroupId, "member1", new[] { "topic1" }, TimeSpan.FromMilliseconds(10), CancellationToken.None);
         
-        bool ok = _coordinator.RecordHeartbeat(GroupId, "member1", 1, out bool rebalanceInProgress);
+        var code = _coordinator.RecordHeartbeat(GroupId, "member1", 1);
         
-        Assert.True(ok);
-        Assert.True(rebalanceInProgress);
+        Assert.Equal(Flumewright.Protocol.GroupErrorCode.GroupRebalanceInProgress, code);
     }
 
     [Fact]
@@ -75,8 +74,8 @@ public class GroupCoordinatorTests
 
         _coordinator.RemoveMember(GroupId, "member1");
 
-        bool ok = _coordinator.RecordHeartbeat(GroupId, "member1", currentGen, out _);
-        Assert.False(ok);
+        var code = _coordinator.RecordHeartbeat(GroupId, "member1", currentGen);
+        Assert.Equal(Flumewright.Protocol.GroupErrorCode.GroupUnknownMember, code);
     }
 
     [Fact]
@@ -94,9 +93,8 @@ public class GroupCoordinatorTests
         var completed = await _coordinator.SyncGroupAsync(GroupId, "m1", 1, assignments, CancellationToken.None);
         Assert.Equal(1, completed.Generation);
         
-        bool ok = _coordinator.RecordHeartbeat(GroupId, "m1", 1, out bool rebalance);
-        Assert.True(ok);
-        Assert.False(rebalance);
+        var code = _coordinator.RecordHeartbeat(GroupId, "m1", 1);
+        Assert.Equal(Flumewright.Protocol.GroupErrorCode.GroupOk, code);
         
         var state = _coordinator.GetGroupState(GroupId);
         Assert.Equal(1, state!.Generation);
@@ -219,7 +217,7 @@ public class GroupCoordinatorTests
 #pragma warning disable VSTHRD003 // Avoid awaiting foreign Tasks
                     await gate.Task;
 #pragma warning restore VSTHRD003 // Avoid awaiting foreign Tasks
-                    _coordinator.RecordHeartbeat(GroupId, "m1", gen, out _);
+                    _coordinator.RecordHeartbeat(GroupId, "m1", gen);
                 });
             }
         }

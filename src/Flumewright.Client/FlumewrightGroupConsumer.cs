@@ -10,6 +10,29 @@ using Grpc.Net.Client;
 
 namespace Flumewright.Client;
 
+internal enum ClientGroupErrorCode
+{
+    Ok = 0,
+    Fenced = 1,
+    RebalanceInProgress = 2,
+    UnknownMember = 3
+}
+
+internal static class GroupErrorCodeExtensions
+{
+    public static ClientGroupErrorCode ToClientCode(this Protocol.GroupErrorCode code)
+    {
+        return code switch
+        {
+            Protocol.GroupErrorCode.GroupOk => ClientGroupErrorCode.Ok,
+            Protocol.GroupErrorCode.GroupFenced => ClientGroupErrorCode.Fenced,
+            Protocol.GroupErrorCode.GroupRebalanceInProgress => ClientGroupErrorCode.RebalanceInProgress,
+            Protocol.GroupErrorCode.GroupUnknownMember => ClientGroupErrorCode.UnknownMember,
+            _ => throw new ArgumentOutOfRangeException(nameof(code), $"Unknown group error code: {code}")
+        };
+    }
+}
+
 public sealed class FlumewrightGroupConsumer : IDisposable
 {
     private readonly GrpcChannel? _channel;
@@ -99,6 +122,11 @@ public sealed class FlumewrightGroupConsumer : IDisposable
                     catch (OperationCanceledException)
                     {
                         // cancelled for rejoin or outer cancellation
+                        break;
+                    }
+                    catch (RpcException ex) when (ex.StatusCode == StatusCode.Cancelled)
+                    {
+                        // Grpc throws RpcException(Cancelled) when the CancellationToken is cancelled
                         break;
                     }
                     
@@ -191,7 +219,8 @@ public sealed class FlumewrightGroupConsumer : IDisposable
                         var hbRes = await _client.HeartbeatAsync(hbReq, cancellationToken: hbToken);
                         if (!hbRes.Ok)
                         {
-                            if (hbRes.RebalanceInProgress || hbRes.Reason.Contains("fenced", StringComparison.OrdinalIgnoreCase))
+                            var clientCode = hbRes.Code.ToClientCode();
+                            if (clientCode == ClientGroupErrorCode.RebalanceInProgress || clientCode == ClientGroupErrorCode.Fenced)
                             {
                                 // Cancel consumption to rejoin
                                 await heartbeatCts.CancelAsync();
@@ -199,7 +228,7 @@ public sealed class FlumewrightGroupConsumer : IDisposable
                             }
                             else
                             {
-                                throw new Exception($"Heartbeat failed: {hbRes.Reason}");
+                                throw new Exception($"Heartbeat failed: {hbRes.Reason} (Code: {clientCode})");
                             }
                         }
                     }

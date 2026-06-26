@@ -21,11 +21,11 @@ internal sealed class InMemoryCommittedOffsetStore : ICommittedOffsetStore
         _coordinator = coordinator;
     }
 
-    public ValueTask<(bool Ok, string Reason)> CommitOffsetAsync(string groupId, string topic, int partition, long offset, int generation = 0, CancellationToken ct = default)
+    public ValueTask<(bool Ok, string Reason, Flumewright.Protocol.GroupErrorCode Code)> CommitOffsetAsync(string groupId, string topic, int partition, long offset, int generation = 0, CancellationToken ct = default)
     {
         if (offset < 0)
         {
-            return new ValueTask<(bool, string)>((false, "Offset cannot be negative"));
+            return new ValueTask<(bool, string, Flumewright.Protocol.GroupErrorCode)>((false, "Offset cannot be negative", Flumewright.Protocol.GroupErrorCode.GroupOk));
         }
 
         var key = (groupId, topic, partition);
@@ -37,7 +37,7 @@ internal sealed class InMemoryCommittedOffsetStore : ICommittedOffsetStore
                 var currentGen = _coordinator.GetGroupGeneration(groupId);
                 if (currentGen != null && currentGen.Value != generation)
                 {
-                    return new ValueTask<(bool, string)>((false, "Fenced: stale generation"));
+                    return new ValueTask<(bool, string, Flumewright.Protocol.GroupErrorCode)>((false, "Fenced: stale generation", Flumewright.Protocol.GroupErrorCode.GroupFenced));
                 }
             }
             // Reading the watermark MUST be inside the lock. If read before the lock, a message 
@@ -51,7 +51,7 @@ internal sealed class InMemoryCommittedOffsetStore : ICommittedOffsetStore
                 // read, so reject. The (b) variant — allowing commit(0) on a pre-created empty topic — is
                 // deferred; switching to it would require a new DEC and an API to pre-create empty topics.
                 // See DEC-023.
-                return new ValueTask<(bool, string)>((false, "Unknown topic or invalid partition"));
+                return new ValueTask<(bool, string, Flumewright.Protocol.GroupErrorCode)>((false, "Unknown topic or invalid partition", Flumewright.Protocol.GroupErrorCode.GroupOk));
             }
             long highWatermark = highWatermarkOpt.Value;
             
@@ -60,18 +60,18 @@ internal sealed class InMemoryCommittedOffsetStore : ICommittedOffsetStore
             // ("all current records processed").
             if (offset > highWatermark)
             {
-                return new ValueTask<(bool, string)>((false, "Offset out of range"));
+                return new ValueTask<(bool, string, Flumewright.Protocol.GroupErrorCode)>((false, "Offset out of range", Flumewright.Protocol.GroupErrorCode.GroupOk));
             }
 
             if (_offsets.TryGetValue(key, out var current) && offset < current)
             {
-                return new ValueTask<(bool, string)>((false, "Backwards commit rejected"));
+                return new ValueTask<(bool, string, Flumewright.Protocol.GroupErrorCode)>((false, "Backwards commit rejected", Flumewright.Protocol.GroupErrorCode.GroupOk));
             }
 
             _offsets[key] = offset;
         }
 
-        return new ValueTask<(bool, string)>((true, ""));
+        return new ValueTask<(bool, string, Flumewright.Protocol.GroupErrorCode)>((true, "", Flumewright.Protocol.GroupErrorCode.GroupOk));
     }
 
     public ValueTask<long?> GetCommittedOffsetAsync(string groupId, string topic, int partition, CancellationToken ct = default)

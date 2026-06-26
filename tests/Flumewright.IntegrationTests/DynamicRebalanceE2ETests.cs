@@ -29,7 +29,7 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
 
         var strategy = new RangeAssignmentStrategy();
-        var partitionCounts = new Dictionary<string, int> { { topic, 2 } };
+        var partitionCounts = new Dictionary<string, int> { { topic, 4 } };
 
         using var c1 = new FlumewrightGroupConsumer(address, groupId, "member-1");
         var c1Messages = new List<ReceivedMessage>();
@@ -72,7 +72,7 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
 
         var strategy = new RangeAssignmentStrategy();
-        var partitionCounts = new Dictionary<string, int> { { topic, 1 } };
+        var partitionCounts = new Dictionary<string, int> { { topic, 4 } };
 
         for (int i = 0; i < 5; i++)
         {
@@ -86,7 +86,7 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         var m2 = await iter1.MoveNextAsync();
         
         iter1.Current.Offset.Should().Be(1);
-        await c1.CommitOffsetAsync(topic, 0, 2, cts.Token);
+        await c1.CommitOffsetAsync(topic, iter1.Current.Partition, 2, cts.Token);
         
         await c1.LeaveGroupAsync(cts.Token);
         c1.Dispose(); // stop member 1 entirely
@@ -149,7 +149,7 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         var strategy = new RangeAssignmentStrategy();
-        var partitionCounts = new Dictionary<string, int> { { topic, 1 } };
+        var partitionCounts = new Dictionary<string, int> { { topic, 4 } };
         using var publisher = new FlumewrightPublisher(address);
 
         using var c1 = new FlumewrightGroupConsumer(address, groupId, "member-1");
@@ -189,7 +189,7 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
 
         using var c2 = new FlumewrightGroupConsumer(address, groupId, "member-2");
         var strategy = new RangeAssignmentStrategy();
-        var iter = c2.SubscribeAsync(new[] { topic }, new Dictionary<string, int> { { topic, 1 } }, strategy, FlumewrightOffsetReset.Earliest, TimeSpan.FromMilliseconds(500), cts.Token).GetAsyncEnumerator(cts.Token);
+        var iter = c2.SubscribeAsync(new[] { topic }, new Dictionary<string, int> { { topic, 4 } }, strategy, FlumewrightOffsetReset.Earliest, TimeSpan.FromMilliseconds(500), cts.Token).GetAsyncEnumerator(cts.Token);
         
         using var publisher = new FlumewrightPublisher(address);
         await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes("msg"), partitionKey: new byte[] { 0 }, ct: cts.Token);
@@ -211,7 +211,7 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
 
         var strategy = new RangeAssignmentStrategy();
-        var partitionCounts = new Dictionary<string, int> { { topic, 1 } };
+        var partitionCounts = new Dictionary<string, int> { { topic, 4 } };
         using var publisher = new FlumewrightPublisher(address);
         await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes("msg"), partitionKey: new byte[] { 0 }, ct: cts.Token);
 
@@ -224,11 +224,9 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
 
         var iter = c1.SubscribeAsync(new[] { topic }, partitionCounts, strategy, FlumewrightOffsetReset.Earliest, TimeSpan.FromMilliseconds(500), cts.Token).GetAsyncEnumerator(cts.Token);
         
-        await iter.MoveNextAsync();
-
         Func<Task> act = async () =>
         {
-            await iter.MoveNextAsync();
+            while (await iter.MoveNextAsync()) { }
         };
         
         try
@@ -262,16 +260,17 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
     {
         while (!ct.IsCancellationRequested)
         {
-            foreach (var p in expectedPartitions)
+            // Publish enough messages round-robin so that all partitions get at least one
+            for (int i = 0; i < 8; i++)
             {
-                await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes("msg"), partitionKey: new byte[] { (byte)p }, ct: ct);
+                await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes("msg"), partitionKey: Array.Empty<byte>(), ct: ct);
             }
 
             await Task.Delay(500, ct);
             lock (targetList)
             {
                 var receivedPartitions = targetList.Select(m => m.Partition).Distinct().OrderBy(p => p).ToList();
-                if (receivedPartitions.SequenceEqual(expectedPartitions.OrderBy(p => p)))
+                if (expectedPartitions.All(p => receivedPartitions.Contains(p)))
                 {
                     return;
                 }

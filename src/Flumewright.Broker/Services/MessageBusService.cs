@@ -111,7 +111,7 @@ internal class MessageBusService : MessageBus.MessageBusBase
 
     public override async Task<CommitAck> CommitOffset(CommitRequest request, ServerCallContext context)
     {
-        var (ok, reason) = await _offsetStore.CommitOffsetAsync(
+        var (ok, reason, code) = await _offsetStore.CommitOffsetAsync(
             request.GroupId, 
             request.Topic, 
             request.Partition, 
@@ -122,23 +122,24 @@ internal class MessageBusService : MessageBus.MessageBusBase
         return new CommitAck
         {
             Ok = ok,
-            Reason = reason ?? string.Empty
+            Reason = reason ?? string.Empty,
+            Code = code
         };
     }
 
     public override Task<HeartbeatResponse> Heartbeat(HeartbeatRequest request, ServerCallContext context)
     {
-        bool ok = _groupCoordinator.RecordHeartbeat(
+        var code = _groupCoordinator.RecordHeartbeat(
             request.GroupId, 
             request.MemberId, 
-            request.Generation, 
-            out bool rebalanceInProgress);
+            request.Generation);
 
         return Task.FromResult(new HeartbeatResponse
         {
-            Ok = ok,
-            Reason = ok ? string.Empty : "Invalid generation or member unknown",
-            RebalanceInProgress = rebalanceInProgress
+            Ok = code == Protocol.GroupErrorCode.GroupOk,
+            Reason = code == Protocol.GroupErrorCode.GroupOk ? string.Empty : code.ToString(),
+            RebalanceInProgress = code == Protocol.GroupErrorCode.GroupRebalanceInProgress,
+            Code = code
         });
     }
 
@@ -172,11 +173,11 @@ internal class MessageBusService : MessageBus.MessageBusBase
         }
         catch (InvalidOperationException ex)
         {
-            return new JoinGroupResponse { Ok = false, Reason = ex.Message };
+            return new JoinGroupResponse { Ok = false, Reason = ex.Message, Code = Protocol.GroupErrorCode.GroupUnknownMember };
         }
         catch (OperationCanceledException)
         {
-            return new JoinGroupResponse { Ok = false, Reason = "Rebalance in progress" };
+            return new JoinGroupResponse { Ok = false, Reason = "Rebalance in progress", Code = Protocol.GroupErrorCode.GroupRebalanceInProgress };
         }
     }
 
@@ -216,11 +217,11 @@ internal class MessageBusService : MessageBus.MessageBusBase
         }
         catch (InvalidOperationException ex)
         {
-            return new SyncGroupResponse { Ok = false, Reason = ex.Message };
+            return new SyncGroupResponse { Ok = false, Reason = ex.Message, Code = Protocol.GroupErrorCode.GroupUnknownMember };
         }
         catch (OperationCanceledException)
         {
-            return new SyncGroupResponse { Ok = false, Reason = "Rebalance in progress" };
+            return new SyncGroupResponse { Ok = false, Reason = "Rebalance in progress", Code = Protocol.GroupErrorCode.GroupRebalanceInProgress };
         }
     }
     public override Task<LeaveGroupResponse> LeaveGroup(LeaveGroupRequest request, ServerCallContext context)
