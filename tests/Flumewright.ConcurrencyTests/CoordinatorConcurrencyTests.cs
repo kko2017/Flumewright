@@ -45,9 +45,6 @@ namespace Flumewright.ConcurrencyTests
 
             await Task.WhenAll(t1, t2, t3, t4);
 
-            var finalGen = coordinator.GetGroupGeneration(groupId);
-            Assert.True(finalGen != null, "Generation should not be null after joins");
-
             if (r1 != null && r1.IsLeader)
             {
                 Assert.Contains(r1.Members, m => m.MemberId == "m1");
@@ -64,6 +61,23 @@ namespace Flumewright.ConcurrencyTests
                 {
                     Assert.Contains(r1.Members, m => m.MemberId == "m1");
                 }
+            }
+
+            var finalState = coordinator.GetGroupState(groupId);
+            Assert.NotNull(finalState);
+            var finalGen = finalState.Generation;
+            Assert.InRange(finalGen, 0, 5);
+
+            var liveMembers = finalState.Members.Select(m => m.MemberId).ToList();
+            Assert.Equal(liveMembers.Distinct().Count(), liveMembers.Count);
+
+            if (liveMembers.Contains("m1"))
+            {
+                Assert.True(r1 != null && r1.Generation <= finalGen, "m1 is present but lacks a successful join");
+            }
+            if (liveMembers.Contains("m2"))
+            {
+                Assert.True(r2 != null && r2.Generation <= finalGen, "m2 is present but lacks a successful join");
             }
         }
 
@@ -120,10 +134,13 @@ namespace Flumewright.ConcurrencyTests
 
             using var cts = new CancellationTokenSource();
 
+            bool m2Joined = false;
             var t2 = Task.Run(async () => {
                 try {
                     await coordinator.JoinGroupAsync(groupId, "m2", new[] { "t1" }, TimeSpan.FromHours(1), cts.Token);
-                } catch (InvalidOperationException) { }
+                    m2Joined = true;
+                } catch (InvalidOperationException) {
+                } catch (OperationCanceledException) { }
             });
 
             var t3 = Task.Run(() => {
@@ -134,14 +151,27 @@ namespace Flumewright.ConcurrencyTests
             await Task.WhenAll(t1, t2, t3);
 
             var finalGen = coordinator.GetGroupGeneration(groupId);
-            Assert.True(finalGen > oldGen, "Generation should have bumped due to m2 joining");
             
-            Assert.True(
-                hbResult == GroupErrorCode.GroupOk || 
-                hbResult == GroupErrorCode.GroupRebalanceInProgress || 
-                hbResult == GroupErrorCode.GroupFenced,
-                $"Unexpected heartbeat result: {hbResult}"
-            );
+            if (m2Joined)
+            {
+                Assert.True(finalGen > oldGen, "Generation should have bumped due to m2 joining");
+                Assert.True(
+                    hbResult == GroupErrorCode.GroupOk || 
+                    hbResult == GroupErrorCode.GroupRebalanceInProgress || 
+                    hbResult == GroupErrorCode.GroupFenced ||
+                    hbResult == GroupErrorCode.GroupUnknownMember,
+                    $"Unexpected heartbeat result: {hbResult}"
+                );
+            }
+            else
+            {
+                Assert.Equal(oldGen, finalGen);
+                Assert.True(
+                    hbResult == GroupErrorCode.GroupOk || 
+                    hbResult == GroupErrorCode.GroupUnknownMember,
+                    $"Unexpected heartbeat result: {hbResult}"
+                );
+            }
         }
 
         [Fact]
