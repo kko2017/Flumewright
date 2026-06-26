@@ -62,9 +62,17 @@ message CommitRequest {
   int32 generation = 5;
 }
 
+enum GroupErrorCode {
+  GROUP_OK = 0;
+  GROUP_FENCED = 1;                 // stale generation -> rejoin
+  GROUP_REBALANCE_IN_PROGRESS = 2;
+  GROUP_UNKNOWN_MEMBER = 3;
+}
+
 message CommitAck {
   bool ok = 1;
   string reason = 2;
+  GroupErrorCode code = 3;
 }
 
 message JoinGroupRequest {
@@ -85,6 +93,7 @@ message JoinGroupResponse {
   string member_id = 4;
   bool is_leader = 5;
   repeated MemberMetadata members = 6;
+  GroupErrorCode code = 7;
 }
 
 message MemberAssignment {
@@ -105,6 +114,7 @@ message SyncGroupResponse {
   string reason = 2;
   repeated MemberAssignment assignments = 3;
   int32 generation = 4;
+  GroupErrorCode code = 5;
 }
 
 message HeartbeatRequest {
@@ -117,6 +127,7 @@ message HeartbeatResponse {
   bool ok = 1;
   string reason = 2;
   bool rebalance_in_progress = 3;
+  GroupErrorCode code = 4;
 }
 
 message LeaveGroupRequest {
