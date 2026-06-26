@@ -111,6 +111,9 @@ public class GroupCoordinatorTests
         var tasks = new Task[numThreads];
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         
+        var successfulReturns = new System.Collections.Concurrent.ConcurrentBag<(string MemberId, int Generation)>();
+        var leaderSnapshots = new System.Collections.Concurrent.ConcurrentDictionary<int, IReadOnlyList<GroupMemberSnapshot>>();
+
         for (int i = 0; i < numThreads; i++)
         {
             int threadId = i;
@@ -119,12 +122,22 @@ public class GroupCoordinatorTests
 #pragma warning disable VSTHRD003 // Avoid awaiting foreign Tasks
                 await gate.Task;
 #pragma warning restore VSTHRD003 // Avoid awaiting foreign Tasks
+                int lastObservedGen = 0;
                 for (int j = 0; j < operationsPerThread; j++)
                 {
                     string memberId = $"member-{threadId}-{j}";
                     try
                     {
-                        await _coordinator.JoinGroupAsync(GroupId, memberId, new[] { "topic1" }, TimeSpan.FromMilliseconds(1), CancellationToken.None);
+                        var res = await _coordinator.JoinGroupAsync(GroupId, memberId, new[] { "topic1" }, TimeSpan.FromMilliseconds(1), CancellationToken.None);
+                        successfulReturns.Add((memberId, res.Generation));
+                        
+                        Assert.True(res.Generation >= lastObservedGen, "Generation must not decrease");
+                        lastObservedGen = res.Generation;
+
+                        if (res.IsLeader)
+                        {
+                            leaderSnapshots[res.Generation] = res.Members;
+                        }
                     }
                     catch (InvalidOperationException)
                     {
@@ -144,9 +157,18 @@ public class GroupCoordinatorTests
         var state = _coordinator.GetGroupState(GroupId);
         Assert.NotNull(state);
         
-        // Members count should be exactly the joined members. We don't guarantee exact generation number because JoinGroup could be coalesced or cancelled.
-        Assert.True(state.Members.Count > 0);
-        Assert.True(state.Generation > 0);
+        var membersByGeneration = successfulReturns.GroupBy(x => x.Generation);
+        foreach (var genGrp in membersByGeneration)
+        {
+            int gen = genGrp.Key;
+            Assert.True(leaderSnapshots.TryGetValue(gen, out var leaderSnapshot), $"No leader snapshot for generation {gen}");
+            
+            var leaderMemberIds = new HashSet<string>(leaderSnapshot.Select(m => m.MemberId));
+            foreach (var ret in genGrp)
+            {
+                Assert.True(leaderMemberIds.Contains(ret.MemberId), $"Member {ret.MemberId} returned generation {gen} but is missing from leader's snapshot");
+            }
+        }
     }
 
     [Fact]
@@ -169,6 +191,7 @@ public class GroupCoordinatorTests
     public async Task ConcurrentHeartbeatAndSweep_ResolvesToSingleOutcome()
     {
         await _coordinator.JoinGroupAsync(GroupId, "m1", new[] { "t1" }, TimeSpan.FromMilliseconds(10), CancellationToken.None);
+        await _coordinator.SyncGroupAsync(GroupId, "m1", 1, new Dictionary<string, IReadOnlyList<TopicPartition>>(), CancellationToken.None);
         
         var state = _coordinator.GetGroupState(GroupId);
         int gen = state!.Generation;
@@ -206,5 +229,10 @@ public class GroupCoordinatorTests
 
         state = _coordinator.GetGroupState(GroupId);
         Assert.NotNull(state);
+        
+        bool sweepWon = state.Generation == gen + 1 && state.State == GroupState.Rebalancing && state.Members.Count == 0;
+        bool heartbeatWon = state.Generation == gen && state.State == GroupState.Stable && state.Members.Count == 1;
+
+        Assert.True(sweepWon || heartbeatWon, $"Invalid outcome: Gen={state.Generation}, State={state.State}, Members={state.Members.Count}");
     }
 }
