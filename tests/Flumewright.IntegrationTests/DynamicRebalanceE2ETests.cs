@@ -36,25 +36,25 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         using var c1TaskCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
         var c1Task = ConsumeAsync(c1, topic, partitionCounts, strategy, c1Messages, c1TaskCts.Token);
 
-        await EnsureReceivesFrom(publisher, topic, new[] { 0, 1 }, c1Messages, cts.Token);
+        await EnsureReceivesFrom(publisher, topic, new[] { 0, 1, 2, 3 }, c1Messages, cts.Token);
 
         using var c2 = new FlumewrightGroupConsumer(address, groupId, "member-2");
         var c2Messages = new List<ReceivedMessage>();
         var c2Task = ConsumeAsync(c2, topic, partitionCounts, strategy, c2Messages, cts.Token);
 
         lock (c1Messages) c1Messages.Clear();
-        await EnsureReceivesFrom(publisher, topic, new[] { 1 }, c2Messages, cts.Token);
-        await EnsureReceivesFrom(publisher, topic, new[] { 0 }, c1Messages, cts.Token);
+        await EnsureReceivesFrom(publisher, topic, new[] { 2, 3 }, c2Messages, cts.Token);
+        await EnsureReceivesFrom(publisher, topic, new[] { 0, 1 }, c1Messages, cts.Token);
 
         // Clear messages before wait
         lock (c1Messages) c1Messages.Clear();
-        await EnsureReceivesFrom(publisher, topic, new[] { 0 }, c1Messages, cts.Token);
+        await EnsureReceivesFrom(publisher, topic, new[] { 0, 1 }, c1Messages, cts.Token);
 
         await c1.LeaveGroupAsync(cts.Token);
         await c1TaskCts.CancelAsync();
         
         lock (c2Messages) c2Messages.Clear();
-        await EnsureReceivesFrom(publisher, topic, new[] { 0, 1 }, c2Messages, cts.Token);
+        await EnsureReceivesFrom(publisher, topic, new[] { 0, 1, 2, 3 }, c2Messages, cts.Token);
 
         await cts.CancelAsync();
         await Task.WhenAll(c1Task, c2Task);
@@ -79,7 +79,7 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
             await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes($"msg-{i}"), partitionKey: new byte[] { 0 }, ct: cts.Token);
         }
 
-        using var c1 = new FlumewrightGroupConsumer(address, groupId, "member-1");
+        var c1 = new FlumewrightGroupConsumer(address, groupId, "member-1");
         var iter1 = c1.SubscribeAsync(new[] { topic }, partitionCounts, strategy, FlumewrightOffsetReset.Earliest, TimeSpan.FromMilliseconds(500), cts.Token).GetAsyncEnumerator(cts.Token);
         
         var m1 = await iter1.MoveNextAsync();
