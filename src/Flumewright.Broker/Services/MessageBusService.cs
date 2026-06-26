@@ -136,4 +136,86 @@ public class MessageBusService : MessageBus.MessageBusBase
             RebalanceInProgress = rebalanceInProgress
         });
     }
+
+    public override async Task<JoinGroupResponse> JoinGroup(JoinGroupRequest request, ServerCallContext context)
+    {
+        try
+        {
+            var result = await _groupCoordinator.JoinGroupAsync(
+                request.GroupId, 
+                request.MemberId, 
+                request.Topics, 
+                TimeSpan.FromSeconds(10), // phase-1 hardcoded timeout
+                context.CancellationToken);
+
+            var response = new JoinGroupResponse
+            {
+                Ok = true,
+                Generation = result.Generation,
+                MemberId = request.MemberId,
+                IsLeader = result.IsLeader
+            };
+
+            foreach (var m in result.Members)
+            {
+                var meta = new MemberMetadata { MemberId = m.MemberId };
+                meta.Topics.AddRange(m.Topics);
+                response.Members.Add(meta);
+            }
+
+            return response;
+        }
+        catch (InvalidOperationException ex)
+        {
+            return new JoinGroupResponse { Ok = false, Reason = ex.Message };
+        }
+        catch (OperationCanceledException)
+        {
+            return new JoinGroupResponse { Ok = false, Reason = "Rebalance in progress" };
+        }
+    }
+
+    public override async Task<SyncGroupResponse> SyncGroup(SyncGroupRequest request, ServerCallContext context)
+    {
+        try
+        {
+            var dict = new Dictionary<string, IReadOnlyList<Core.TopicPartition>>();
+            foreach (var a in request.Assignments)
+            {
+                dict[a.MemberId] = a.Partitions.Select(p => new Core.TopicPartition(a.Topic, p)).ToList();
+            }
+
+            var result = await _groupCoordinator.SyncGroupAsync(
+                request.GroupId, 
+                request.MemberId, 
+                request.Generation, 
+                dict, 
+                context.CancellationToken);
+
+            var response = new SyncGroupResponse
+            {
+                Ok = true,
+                Generation = result.Generation
+            };
+
+            // Convert back to proto
+            var groupedByTopic = result.AssignedPartitions.GroupBy(p => p.Topic);
+            foreach (var g in groupedByTopic)
+            {
+                var ma = new MemberAssignment { MemberId = request.MemberId, Topic = g.Key };
+                ma.Partitions.AddRange(g.Select(p => p.Partition));
+                response.Assignments.Add(ma);
+            }
+
+            return response;
+        }
+        catch (InvalidOperationException ex)
+        {
+            return new SyncGroupResponse { Ok = false, Reason = ex.Message };
+        }
+        catch (OperationCanceledException)
+        {
+            return new SyncGroupResponse { Ok = false, Reason = "Rebalance in progress" };
+        }
+    }
 }

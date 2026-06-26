@@ -14,17 +14,18 @@ public record GroupMemberSnapshot(string MemberId, IReadOnlyList<string> Topics,
 
 public record GroupStateSnapshot(string GroupId, int Generation, GroupState State, string? LeaderId, IReadOnlyList<GroupMemberSnapshot> Members);
 
-public record GroupJoinResult(int Generation, GroupState State, bool IsLeader);
+public record GroupJoinResult(int Generation, GroupState State, bool IsLeader, IReadOnlyList<GroupMemberSnapshot> Members);
+
+public record GroupSyncResult(int Generation, IReadOnlyList<TopicPartition> AssignedPartitions);
 
 public interface IGroupCoordinator
 {
     // Membership operations
-    GroupJoinResult AddOrUpdateMember(string groupId, string memberId, IReadOnlyList<string> topics);
+    Task<GroupJoinResult> JoinGroupAsync(string groupId, string memberId, IReadOnlyList<string> topics, TimeSpan rebalanceTimeout, CancellationToken ct);
+    Task<GroupSyncResult> SyncGroupAsync(string groupId, string memberId, int generation, IReadOnlyDictionary<string, IReadOnlyList<TopicPartition>> assignments, CancellationToken ct);
+    
     bool RemoveMember(string groupId, string memberId);
     
-    // Rebalance lifecycle
-    bool BeginRebalance(string groupId);
-    bool CompleteRebalance(string groupId, int expectedGeneration, IReadOnlyDictionary<string, IReadOnlyList<TopicPartition>> assignments);
     
     // Heartbeat
     bool RecordHeartbeat(string groupId, string memberId, int expectedGeneration, out bool rebalanceInProgress);

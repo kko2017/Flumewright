@@ -1,5 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Flumewright.Broker.Core;
 
@@ -18,47 +21,185 @@ public class GroupCoordinator : IGroupCoordinator
         return group;
     }
 
-    public GroupJoinResult AddOrUpdateMember(string groupId, string memberId, IReadOnlyList<string> topics)
+    private void StartRebalance(ConsumerGroup group)
     {
+        group.State = GroupState.Rebalancing;
+        group.Generation++;
+        group.LeaderId = null;
+        
+        group.RebalanceTcs?.TrySetCanceled();
+        group.SyncTcs?.TrySetCanceled();
+        
+        group.RebalanceTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        group.SyncTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        foreach (var m in group.Members.Values)
+        {
+            m.HasJoined = false;
+            m.AssignedPartitions = Array.Empty<TopicPartition>();
+        }
+    }
+
+    public async Task<GroupJoinResult> JoinGroupAsync(string groupId, string memberId, IReadOnlyList<string> topics, TimeSpan rebalanceTimeout, CancellationToken ct)
+    {
+        Task waitTask;
+        int generation;
+
         lock (_lock)
         {
             var group = GetOrAddGroup(groupId);
+            
             bool isNewOrChanged = false;
-
             if (!group.Members.TryGetValue(memberId, out var member))
+            {
+                isNewOrChanged = true;
+            }
+            else if (!TopicsEqual(member.Topics, topics))
+            {
+                isNewOrChanged = true;
+            }
+
+            if (group.State == GroupState.Stable && isNewOrChanged)
+            {
+                StartRebalance(group);
+            }
+            // Even if not new or changed, if they are calling JoinGroup, they are joining the rebalance.
+            // If the state is Stable and not new/changed, wait, why would they call JoinGroup unless rebalancing?
+            // If they just call JoinGroup randomly, it should trigger a rebalance.
+            else if (group.State == GroupState.Stable)
+            {
+                StartRebalance(group);
+            }
+
+            if (member == null)
             {
                 member = new GroupMember(memberId, topics);
                 group.Members[memberId] = member;
-                isNewOrChanged = true;
             }
             else
             {
+                member.Topics = topics;
                 member.LastHeartbeat = DateTimeOffset.UtcNow;
-                if (!TopicsEqual(member.Topics, topics))
-                {
-                    member.Topics = topics;
-                    isNewOrChanged = true;
-                }
+            }
+            
+            member.HasJoined = true;
+            
+            if (group.LeaderId == null)
+            {
+                group.LeaderId = memberId;
+            }
+            
+            if (group.RebalanceTcs == null)
+            {
+                 group.RebalanceTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             }
 
-            if (isNewOrChanged)
+            generation = group.Generation;
+            waitTask = group.RebalanceTcs.Task;
+
+            if (group.Members.Values.All(m => m.HasJoined))
             {
-                group.Generation++;
-                group.State = GroupState.Rebalancing;
+                group.RebalanceTcs.TrySetResult();
+            }
+        }
+
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(rebalanceTimeout);
+            await waitTask.WaitAsync(timeoutCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            lock (_lock)
+            {
+                var group = GetOrAddGroup(groupId);
+                if (group.Generation == generation && group.State == GroupState.Rebalancing && group.RebalanceTcs != null && !group.RebalanceTcs.Task.IsCompleted)
+                {
+                    var dead = group.Members.Values.Where(m => !m.HasJoined).Select(m => m.MemberId).ToList();
+                    foreach (var d in dead) group.Members.Remove(d);
+                    
+                    if (group.LeaderId != null && dead.Contains(group.LeaderId))
+                    {
+                        using var enumerator = group.Members.Keys.GetEnumerator();
+                        group.LeaderId = enumerator.MoveNext() ? enumerator.Current : null;
+                    }
+
+                    group.RebalanceTcs.TrySetResult();
+                }
+            }
+            
+            try
+            {
+                await waitTask;
+            }
+            catch (OperationCanceledException)
+            {
+                throw new InvalidOperationException("Rebalance in progress");
+            }
+        }
+
+        lock (_lock)
+        {
+            var group = GetOrAddGroup(groupId);
+            bool isLeader = (group.LeaderId == memberId);
+            var membersList = new List<GroupMemberSnapshot>();
+            if (isLeader)
+            {
+                foreach(var m in group.Members.Values)
+                {
+                    membersList.Add(new GroupMemberSnapshot(m.MemberId, m.Topics, Array.Empty<TopicPartition>()));
+                }
                 
-                foreach (var m in group.Members.Values)
+                if (group.SyncTcs == null || group.SyncTcs.Task.IsCompleted || group.SyncTcs.Task.IsCanceled)
                 {
-                    m.AssignedPartitions = Array.Empty<TopicPartition>();
+                    group.SyncTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 }
             }
+            return new GroupJoinResult(group.Generation, group.State, isLeader, membersList);
+        }
+    }
 
-            if (group.LeaderId == null || !group.Members.ContainsKey(group.LeaderId))
+    public async Task<GroupSyncResult> SyncGroupAsync(string groupId, string memberId, int generation, IReadOnlyDictionary<string, IReadOnlyList<TopicPartition>> assignments, CancellationToken ct)
+    {
+        Task syncTask;
+        lock (_lock)
+        {
+            if (!_groups.TryGetValue(groupId, out var group)) throw new InvalidOperationException("Group not found");
+            if (group.Generation != generation) throw new InvalidOperationException("Fenced");
+            
+            if (group.LeaderId == memberId && group.State == GroupState.Rebalancing)
             {
-                using var enumerator = group.Members.Keys.GetEnumerator();
-                group.LeaderId = enumerator.MoveNext() ? enumerator.Current : null;
+                foreach (var kvp in assignments)
+                {
+                    if (group.Members.TryGetValue(kvp.Key, out var member))
+                    {
+                        member.AssignedPartitions = kvp.Value;
+                    }
+                }
+                group.State = GroupState.Stable;
+                group.SyncTcs?.TrySetResult();
             }
+            
+            syncTask = group.SyncTcs?.Task ?? Task.CompletedTask;
+        }
 
-            return new GroupJoinResult(group.Generation, group.State, group.LeaderId == memberId);
+        try
+        {
+            await syncTask.WaitAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw new InvalidOperationException("Rebalance in progress");
+        }
+
+        lock (_lock)
+        {
+            if (!_groups.TryGetValue(groupId, out var group)) throw new InvalidOperationException("Group not found");
+            if (!group.Members.TryGetValue(memberId, out var member)) throw new InvalidOperationException("Member not found");
+            if (group.Generation != generation) throw new InvalidOperationException("Fenced");
+
+            return new GroupSyncResult(group.Generation, member.AssignedPartitions);
         }
     }
 
@@ -70,65 +211,10 @@ public class GroupCoordinator : IGroupCoordinator
 
             if (group.Members.Remove(memberId))
             {
-                group.Generation++;
-                group.State = GroupState.Rebalancing;
-                
-                foreach (var m in group.Members.Values)
-                {
-                    m.AssignedPartitions = Array.Empty<TopicPartition>();
-                }
-                
-                if (group.LeaderId == memberId)
-                {
-                    using var enumerator = group.Members.Keys.GetEnumerator();
-                    group.LeaderId = enumerator.MoveNext() ? enumerator.Current : null;
-                }
+                StartRebalance(group);
                 return true;
             }
             return false;
-        }
-    }
-
-    public bool BeginRebalance(string groupId)
-    {
-        lock (_lock)
-        {
-            if (!_groups.TryGetValue(groupId, out var group)) return false;
-            
-            if (group.State != GroupState.Rebalancing)
-            {
-                group.State = GroupState.Rebalancing;
-                group.Generation++;
-                
-                foreach (var m in group.Members.Values)
-                {
-                    m.AssignedPartitions = Array.Empty<TopicPartition>();
-                }
-                return true;
-            }
-            return false;
-        }
-    }
-
-    public bool CompleteRebalance(string groupId, int expectedGeneration, IReadOnlyDictionary<string, IReadOnlyList<TopicPartition>> assignments)
-    {
-        lock (_lock)
-        {
-            if (!_groups.TryGetValue(groupId, out var group)) return false;
-            
-            if (group.Generation != expectedGeneration) return false;
-            if (group.State != GroupState.Rebalancing) return false;
-
-            foreach (var kvp in assignments)
-            {
-                if (group.Members.TryGetValue(kvp.Key, out var member))
-                {
-                    member.AssignedPartitions = kvp.Value;
-                }
-            }
-
-            group.State = GroupState.Stable;
-            return true;
         }
     }
 
@@ -172,19 +258,7 @@ public class GroupCoordinator : IGroupCoordinator
                     {
                         group.Members.Remove(m);
                     }
-
-                    group.Generation++;
-                    group.State = GroupState.Rebalancing;
-                    foreach (var m in group.Members.Values)
-                    {
-                        m.AssignedPartitions = Array.Empty<TopicPartition>();
-                    }
-
-                    if (group.LeaderId != null && deadMembers.Contains(group.LeaderId))
-                    {
-                        using var enumerator = group.Members.Keys.GetEnumerator();
-                        group.LeaderId = enumerator.MoveNext() ? enumerator.Current : null;
-                    }
+                    StartRebalance(group);
                 }
             }
         }
@@ -223,6 +297,9 @@ public class GroupCoordinator : IGroupCoordinator
         public string? LeaderId { get; set; }
         public Dictionary<string, GroupMember> Members { get; } = new();
 
+        public TaskCompletionSource? RebalanceTcs { get; set; }
+        public TaskCompletionSource? SyncTcs { get; set; }
+
         public ConsumerGroup(string groupId)
         {
             GroupId = groupId;
@@ -237,6 +314,7 @@ public class GroupCoordinator : IGroupCoordinator
         public IReadOnlyList<string> Topics { get; set; }
         public DateTimeOffset LastHeartbeat { get; set; }
         public IReadOnlyList<TopicPartition> AssignedPartitions { get; set; } = Array.Empty<TopicPartition>();
+        public bool HasJoined { get; set; }
 
         public GroupMember(string memberId, IReadOnlyList<string> topics)
         {
