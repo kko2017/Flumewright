@@ -220,24 +220,47 @@ Phase-2 optimization on top of this same generation core.
 
 ## Mechanism (Phase-1 M3c) — the eager rebalance lifecycle
 
+**The group state machine has three states, following Kafka — not two.** A naive `Stable ↔ Rebalancing`
+collapses two distinct phases and creates a correctness hole (a member can join *after* membership is settled
+but *before* the leader has distributed the assignment, and then be silently included in the generation the
+leader already computed without it — an orphaned member with no partitions). Kafka avoids this by splitting
+the rebalance into two phases, and we do the same:
+
+- **Stable** — steady state; members consume their assigned partitions.
+- **PreparingRebalance** — membership is being (re)collected. The coordinator is waiting for known members to
+  (re)send JoinGroup. **A new JoinGroup in this phase joins the current generation** (the join window is still
+  open).
+- **CompletingRebalance** — membership for this generation is *closed*; the leader is computing and
+  distributing the assignment (SyncGroup). **A new JoinGroup in this phase does NOT slip into the current
+  generation** — it triggers a *fresh* rebalance (bump generation, back to PreparingRebalance). This is the
+  fix for the orphan window: once the join window closes, a latecomer cannot be in an assignment that was
+  computed without it.
+
 A single rebalance, end to end:
 
 1. **Trigger.** The coordinator observes a membership change: a new member's first JoinGroup, an explicit
    LeaveGroup, or a session-timeout expiry (no heartbeat within `session.timeout.ms`).
-2. **Bump generation.** The coordinator increments the group generation. All in-flight commits/heartbeats at
-   the old generation will now be fenced.
-3. **Stop-the-world / rejoin.** The coordinator marks the group "rebalancing". Members, on their next
-   heartbeat, are told to rejoin; each stops consuming and sends JoinGroup. The coordinator waits for all
-   known members to rejoin, bounded by a **rebalance timeout** (a member that misses it is dropped from the
-   new generation).
-4. **Leader computes assignment.** The coordinator picks one member as leader, sends it the member list +
-   subscriptions, and the leader runs the assignment strategy (Decision D) → a per-member partition map.
-5. **Distribute via SyncGroup.** The leader returns the assignment to the coordinator; the coordinator sends
-   each member its slice (and the current generation) in the SyncGroup response.
-6. **Resume.** Each member begins consuming its assigned partitions from each partition's committed offset
-   (M3a semantics: committed = next offset to read, DEC-023). The group is "stable" again.
+2. **Bump generation → PreparingRebalance.** The coordinator increments the group generation and enters
+   PreparingRebalance. All in-flight commits/heartbeats at the old generation will now be fenced.
+3. **Collect members (stop-the-world / rejoin).** Members, on their next heartbeat, are told to rejoin; each
+   stops consuming and sends JoinGroup. The coordinator waits for all known members to rejoin, bounded by a
+   **rebalance timeout** (a member that misses it is dropped from the new generation). A new member arriving
+   here is admitted to this generation.
+4. **Close membership → CompletingRebalance.** Once all known members have rejoined (or the timeout fires),
+   the join window closes and the group enters CompletingRebalance. From here, any new JoinGroup triggers a
+   fresh rebalance rather than joining this generation.
+5. **Leader computes assignment.** The coordinator designates the leader (the first member to JoinGroup this
+   generation), sends it the member list + subscriptions, and the leader runs the assignment strategy
+   (Decision D) → a per-member partition map.
+6. **Distribute via SyncGroup → Stable.** The leader returns the assignment; the coordinator sends each member
+   its slice (and the current generation) in the SyncGroup response, then transitions to Stable.
+7. **Resume.** Each member consumes its assigned partitions from each partition's committed offset (M3a
+   semantics: committed = next offset to read, DEC-023).
 
-Throughout, **commit and heartbeat carry the generation**; anything stale is fenced (Decision E/F).
+Throughout, **commit and heartbeat carry the generation**; anything stale is fenced (Decision E/F). The
+three-state machine is itself a concurrency invariant: transitions are serialized under the coordinator lock,
+and the Preparing→Completing boundary is exactly what makes "a member that successfully joined generation N is
+in the leader's generation-N snapshot" a guarantee rather than a race.
 
 **Relationship to M3a static assignment — coexist, but mutually exclusive (the Kafka rule).** M3a's "consumer
 declares its partitions" path is **retained**, as the equivalent of Kafka's `assign()` (manual) vs
@@ -267,7 +290,7 @@ is replaced by an **explicit, gated** list. The expected proto/broker surface:
 - **proto:** `JoinGroup`, `SyncGroup`, `Heartbeat`, `LeaveGroup` RPCs; a `generation` field on the relevant
   requests/responses and on `CommitOffset`.
 - **broker:** a new `IGroupCoordinator` component (membership table, per-member last-heartbeat, generation,
-  group state machine: stable / rebalancing); a generation check added to the existing `CommitOffsetAsync`
+  group state machine: Stable / PreparingRebalance / CompletingRebalance); a generation check added to the existing `CommitOffsetAsync`
   critical section.
 - **core SDK:** group-membership client (background heartbeat loop, join/sync, applying the received
   assignment, handling "rejoin" signals and partition revocation).
@@ -292,8 +315,11 @@ earns its place. The hazards, all new:
 - **Generation bump vs in-flight commit** — the fence is exactly the race we are defending: a commit must be
   validated against the generation *atomically* with the read of the current generation, inside the lock, or a
   commit can slip across a rebalance boundary.
-- **Group state machine transitions** (stable ↔ rebalancing) must be serialized; two triggers (a join and a
-  death) arriving together must not start two overlapping rebalances.
+- **Group state machine transitions** (Stable → PreparingRebalance → CompletingRebalance → Stable) must be
+  serialized; two triggers (a join and a death) arriving together must not start two overlapping rebalances.
+  The **Preparing→Completing boundary** is itself a race-critical line: a JoinGroup must be classified against
+  the state *atomically* (admitted to the current generation only if still Preparing; otherwise it triggers a
+  fresh rebalance), or a latecomer slips into an assignment computed without it (the orphan bug).
 
 These are precisely the join/leave/commit/handover interleavings ordinary tests hit only by luck — the
 argument for adding Coyote here. The defense layers from 11 all apply, and the non-atomic-boundary +
@@ -306,6 +332,12 @@ time — systematic interleaving exploration:
 
 - **Membership lifecycle:** a member joins → gets an assignment; a second joins → partitions redistribute; a
   member leaves/dies (stops heartbeating) → its partitions reassign to survivors.
+- **Concurrent-join consistency (the orphan guard):** under concurrent joins, **every member that
+  successfully returns from JoinGroup for generation N must appear in the leader's generation-N snapshot** — a
+  join that lands during CompletingRebalance must trigger a fresh rebalance, not slip into the closed
+  generation. This invariant (not an exact-count assertion, which is nondeterministic under coalescing) is
+  what catches the orphan bug; assert it under real contention (a start-gate thundering herd that would fail
+  if the Preparing→Completing boundary were not enforced).
 - **Handover safety (the crux):** assert no double-processing across a rebalance — the gaining member starts
   only from the committed offset, and a *zombie* (a member that resumes after being declared dead) has its
   stale-generation commit **rejected** (the fence works).
