@@ -5,7 +5,7 @@ using Google.Protobuf;
 
 namespace Flumewright.Broker.Services;
 
-public class MessageBusService : MessageBus.MessageBusBase
+internal class MessageBusService : MessageBus.MessageBusBase
 {
     private readonly ITopicStore _topicStore;
     private readonly ICommittedOffsetStore _offsetStore;

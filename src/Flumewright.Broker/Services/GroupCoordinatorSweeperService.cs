@@ -4,7 +4,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Flumewright.Broker.Services;
 
-public class GroupCoordinatorSweeperService : BackgroundService
+internal class GroupCoordinatorSweeperService : BackgroundService
 {
     private readonly IGroupCoordinator _coordinator;
     private readonly ILogger<GroupCoordinatorSweeperService> _logger;

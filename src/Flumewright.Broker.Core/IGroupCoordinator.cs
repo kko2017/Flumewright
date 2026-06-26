@@ -2,24 +2,24 @@ using System.Collections.Generic;
 
 namespace Flumewright.Broker.Core;
 
-public enum GroupState
+internal enum GroupState
 {
     Stable,
     PreparingRebalance,
     CompletingRebalance
 }
 
-public record TopicPartition(string Topic, int Partition);
+internal record TopicPartition(string Topic, int Partition);
 
-public record GroupMemberSnapshot(string MemberId, IReadOnlyList<string> Topics, IReadOnlyList<TopicPartition> AssignedPartitions);
+internal record GroupMemberSnapshot(string MemberId, IReadOnlyList<string> Topics, IReadOnlyList<TopicPartition> AssignedPartitions);
 
-public record GroupStateSnapshot(string GroupId, int Generation, GroupState State, string? LeaderId, IReadOnlyList<GroupMemberSnapshot> Members);
+internal record GroupStateSnapshot(string GroupId, int Generation, GroupState State, string? LeaderId, IReadOnlyList<GroupMemberSnapshot> Members);
 
-public record GroupJoinResult(int Generation, GroupState State, bool IsLeader, IReadOnlyList<GroupMemberSnapshot> Members);
+internal record GroupJoinResult(int Generation, GroupState State, bool IsLeader, IReadOnlyList<GroupMemberSnapshot> Members);
 
-public record GroupSyncResult(int Generation, IReadOnlyList<TopicPartition> AssignedPartitions);
+internal record GroupSyncResult(int Generation, IReadOnlyList<TopicPartition> AssignedPartitions);
 
-public interface IGroupCoordinator
+internal interface IGroupCoordinator
 {
     // Membership operations
     Task<GroupJoinResult> JoinGroupAsync(string groupId, string memberId, IReadOnlyList<string> topics, TimeSpan rebalanceTimeout, CancellationToken ct);

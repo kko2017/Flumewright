@@ -9,7 +9,7 @@ namespace Flumewright.Broker.Core;
 
 internal record RebalanceOutcome(int Generation, string LeaderId, IReadOnlyList<GroupMemberSnapshot> Members);
 
-public class GroupCoordinator : IGroupCoordinator
+internal class GroupCoordinator : IGroupCoordinator
 {
     private readonly object _lock = new();
     private readonly ConcurrentDictionary<string, ConsumerGroup> _groups = new();

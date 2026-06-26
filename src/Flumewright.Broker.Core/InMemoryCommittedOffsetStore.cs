@@ -3,7 +3,7 @@ using System.Threading.Tasks;
 
 namespace Flumewright.Broker.Core;
 
-public sealed class InMemoryCommittedOffsetStore : ICommittedOffsetStore
+internal sealed class InMemoryCommittedOffsetStore : ICommittedOffsetStore
 {
     private readonly ITopicStore _topicStore;
     
