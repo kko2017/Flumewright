@@ -9,11 +9,13 @@ public class MessageBusService : MessageBus.MessageBusBase
 {
     private readonly ITopicStore _topicStore;
     private readonly ICommittedOffsetStore _offsetStore;
+    private readonly IGroupCoordinator _groupCoordinator;
 
-    public MessageBusService(ITopicStore topicStore, ICommittedOffsetStore offsetStore)
+    public MessageBusService(ITopicStore topicStore, ICommittedOffsetStore offsetStore, IGroupCoordinator groupCoordinator)
     {
         _topicStore = topicStore;
         _offsetStore = offsetStore;
+        _groupCoordinator = groupCoordinator;
     }
 
     public override async Task<PublishAck> Publish(PublishEnvelope request, ServerCallContext context)
@@ -117,5 +119,21 @@ public class MessageBusService : MessageBus.MessageBusBase
             Ok = ok,
             Reason = reason ?? string.Empty
         };
+    }
+
+    public override Task<HeartbeatResponse> Heartbeat(HeartbeatRequest request, ServerCallContext context)
+    {
+        bool ok = _groupCoordinator.RecordHeartbeat(
+            request.GroupId, 
+            request.MemberId, 
+            request.Generation, 
+            out bool rebalanceInProgress);
+
+        return Task.FromResult(new HeartbeatResponse
+        {
+            Ok = ok,
+            Reason = ok ? string.Empty : "Invalid generation or member unknown",
+            RebalanceInProgress = rebalanceInProgress
+        });
     }
 }

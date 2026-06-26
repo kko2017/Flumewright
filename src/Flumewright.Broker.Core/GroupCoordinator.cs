@@ -147,6 +147,49 @@ public class GroupCoordinator : IGroupCoordinator
         }
     }
 
+    public void SweepDeadMembers(TimeSpan sessionTimeout)
+    {
+        lock (_lock)
+        {
+            var now = DateTimeOffset.UtcNow;
+            foreach (var group in _groups.Values)
+            {
+                bool anyDead = false;
+                var deadMembers = new List<string>();
+                
+                foreach (var member in group.Members.Values)
+                {
+                    if (now - member.LastHeartbeat > sessionTimeout)
+                    {
+                        deadMembers.Add(member.MemberId);
+                        anyDead = true;
+                    }
+                }
+
+                if (anyDead)
+                {
+                    foreach (var m in deadMembers)
+                    {
+                        group.Members.Remove(m);
+                    }
+
+                    group.Generation++;
+                    group.State = GroupState.Rebalancing;
+                    foreach (var m in group.Members.Values)
+                    {
+                        m.AssignedPartitions = Array.Empty<TopicPartition>();
+                    }
+
+                    if (group.LeaderId != null && deadMembers.Contains(group.LeaderId))
+                    {
+                        using var enumerator = group.Members.Keys.GetEnumerator();
+                        group.LeaderId = enumerator.MoveNext() ? enumerator.Current : null;
+                    }
+                }
+            }
+        }
+    }
+
     public GroupStateSnapshot? GetGroupState(string groupId)
     {
         lock (_lock)

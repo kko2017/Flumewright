@@ -46,7 +46,7 @@ public class MessageBusServiceTests
     {
         var topicStore = new InMemoryTopicStore(1);
         var offsetStore = new InMemoryCommittedOffsetStore(topicStore);
-        var service = new MessageBusService(topicStore, offsetStore);
+        var service = new MessageBusService(topicStore, offsetStore, new Flumewright.Broker.Core.GroupCoordinator());
 
         var request = new SubscribeRequest { Topic = "t1", GroupId = "g1" };
         var writer = new FakeServerStreamWriter<DeliverEnvelope>();
@@ -63,7 +63,7 @@ public class MessageBusServiceTests
     {
         var topicStore = new InMemoryTopicStore(1); // Only partition 0 exists
         var offsetStore = new InMemoryCommittedOffsetStore(topicStore);
-        var service = new MessageBusService(topicStore, offsetStore);
+        var service = new MessageBusService(topicStore, offsetStore, new Flumewright.Broker.Core.GroupCoordinator());
 
         var request = new SubscribeRequest { Topic = "t1", GroupId = "g1" };
         request.Partitions.Add(99); // Invalid partition

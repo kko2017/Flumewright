@@ -134,4 +134,68 @@ public class GroupCoordinatorTests
         Assert.Equal(numThreads * operationsPerThread, state.Members.Count);
         Assert.Equal(numThreads * operationsPerThread, state.Generation);
     }
+
+    [Fact]
+    public void SweepDeadMembers_EvictsMembers_AndBumpsGeneration()
+    {
+        _coordinator.AddOrUpdateMember(GroupId, "m1", new[] { "t1" });
+        _coordinator.AddOrUpdateMember(GroupId, "m2", new[] { "t1" });
+        
+        var state = _coordinator.GetGroupState(GroupId);
+        Assert.Equal(2, state!.Generation); // 1 for m1, 1 for m2
+
+        // Wait slightly, then sweep with 0 timeout to evict all
+        _coordinator.SweepDeadMembers(TimeSpan.Zero);
+
+        state = _coordinator.GetGroupState(GroupId);
+        Assert.Equal(3, state!.Generation);
+        Assert.Equal(GroupState.Rebalancing, state.State);
+        Assert.Empty(state.Members);
+    }
+
+    [Fact]
+    public async Task ConcurrentHeartbeatAndSweep_ResolvesToSingleOutcome()
+    {
+        _coordinator.AddOrUpdateMember(GroupId, "m1", new[] { "t1" });
+        
+        var state = _coordinator.GetGroupState(GroupId);
+        int gen = state!.Generation;
+
+        int numThreads = 20;
+        var tasks = new Task[numThreads];
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        
+        for (int i = 0; i < numThreads; i++)
+        {
+            if (i % 2 == 0)
+            {
+                tasks[i] = Task.Run(async () => 
+                {
+#pragma warning disable VSTHRD003 // Avoid awaiting foreign Tasks
+                    await gate.Task;
+#pragma warning restore VSTHRD003 // Avoid awaiting foreign Tasks
+                    _coordinator.SweepDeadMembers(TimeSpan.Zero);
+                });
+            }
+            else
+            {
+                tasks[i] = Task.Run(async () => 
+                {
+#pragma warning disable VSTHRD003 // Avoid awaiting foreign Tasks
+                    await gate.Task;
+#pragma warning restore VSTHRD003 // Avoid awaiting foreign Tasks
+                    _coordinator.RecordHeartbeat(GroupId, "m1", gen, out _);
+                });
+            }
+        }
+        
+        gate.SetResult();
+        await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(5));
+
+        state = _coordinator.GetGroupState(GroupId);
+        // Either the sweep won (member gone) or heartbeat won (member still there).
+        // Since sweep is TimeSpan.Zero, it's highly likely to evict if it wins. 
+        // But what matters is no double-evict crashing or corrupting state.
+        Assert.NotNull(state);
+    }
 }

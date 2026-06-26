@@ -14,6 +14,8 @@ builder.WebHost.ConfigureKestrel(options =>
 builder.Services.AddGrpc();
 builder.Services.AddSingleton<ITopicStore, InMemoryTopicStore>();
 builder.Services.AddSingleton<ICommittedOffsetStore, InMemoryCommittedOffsetStore>();
+builder.Services.AddSingleton<IGroupCoordinator, GroupCoordinator>();
+builder.Services.AddHostedService<GroupCoordinatorSweeperService>();
 
 var app = builder.Build();
 
