@@ -26,13 +26,25 @@ namespace Flumewright.ConcurrencyTests
                 try {
                     // Use a very long timeout so we don't rely on real time
                     r1 = await coordinator.JoinGroupAsync(groupId, "m1", topics, TimeSpan.FromHours(1), CancellationToken.None);
-                } catch (InvalidOperationException) { }
+                } catch (InvalidOperationException) {
+                    // [suppress: intended cancel-first interleaving]
+                } catch (OperationCanceledException) {
+                    // [suppress: intended cancel-first interleaving]
+                } finally {
+                    coordinator.RemoveMember(groupId, "m1");
+                }
             });
             
             var t2 = Task.Run(async () => {
                 try {
                     r2 = await coordinator.JoinGroupAsync(groupId, "m2", topics, TimeSpan.FromHours(1), CancellationToken.None);
-                } catch (InvalidOperationException) { }
+                } catch (InvalidOperationException) {
+                    // [suppress: intended cancel-first interleaving]
+                } catch (OperationCanceledException) {
+                    // [suppress: intended cancel-first interleaving]
+                } finally {
+                    coordinator.RemoveMember(groupId, "m2");
+                }
             });
 
             var t3 = Task.Run(() => {
@@ -140,7 +152,10 @@ namespace Flumewright.ConcurrencyTests
                     await coordinator.JoinGroupAsync(groupId, "m2", new[] { "t1" }, TimeSpan.FromHours(1), cts.Token);
                     m2Joined = true;
                 } catch (InvalidOperationException) {
-                } catch (OperationCanceledException) { }
+                    // [suppress: intended cancel-first interleaving]
+                } catch (OperationCanceledException) { 
+                    // [suppress: intended cancel-first interleaving]
+                }
             });
 
             var t3 = Task.Run(() => {
@@ -201,10 +216,12 @@ namespace Flumewright.ConcurrencyTests
             var engine = TestingEngine.Create(config, test);
             engine.Run();
 
+            Console.WriteLine(engine.GetReport());
+
             if (engine.TestReport.NumOfFoundBugs > 0)
             {
                 var bugs = string.Join(Environment.NewLine, engine.TestReport.BugReports);
-                Assert.Fail($"Coyote found {engine.TestReport.NumOfFoundBugs} bugs: {bugs}");
+                Assert.Fail($"Coyote found {engine.TestReport.NumOfFoundBugs} bugs: {bugs}\n\nReport:\n{engine.GetReport()}");
             }
         }
     }

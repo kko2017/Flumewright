@@ -7,6 +7,7 @@
 
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <CoyoteRewrite>true</CoyoteRewrite>
   </PropertyGroup>
 
   <ItemGroup>
@@ -23,7 +24,17 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="coyote.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Flumewright.Broker.Core\Flumewright.Broker.Core.csproj" />
   </ItemGroup>
+
+  <Target Name="CoyoteRewriteTarget" AfterTargets="Build">
+    <Exec Command="coyote rewrite $(TargetPath)" />
+  </Target>
 
 </Project>

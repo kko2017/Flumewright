@@ -69,7 +69,10 @@ namespace Flumewright.ConcurrencyTests
                 try {
                     await coordinator.JoinGroupAsync(groupId, "m2", new[] { topic }, TimeSpan.FromHours(1), cts.Token);
                 } catch (InvalidOperationException) {
-                } catch (OperationCanceledException) { }
+                    // [suppress: intended cancel-first interleaving]
+                } catch (OperationCanceledException) { 
+                    // [suppress: intended cancel-first interleaving]
+                }
             });
 
             var t3 = Task.Run(() => {
@@ -114,10 +117,12 @@ namespace Flumewright.ConcurrencyTests
             var engine = TestingEngine.Create(config, test);
             engine.Run();
 
+            Console.WriteLine(engine.GetReport());
+
             if (engine.TestReport.NumOfFoundBugs > 0)
             {
                 var bugs = string.Join(Environment.NewLine, engine.TestReport.BugReports);
-                Assert.Fail($"Coyote found {engine.TestReport.NumOfFoundBugs} bugs: {bugs}");
+                Assert.Fail($"Coyote found {engine.TestReport.NumOfFoundBugs} bugs: {bugs}\n\nReport:\n{engine.GetReport()}");
             }
         }
     }
