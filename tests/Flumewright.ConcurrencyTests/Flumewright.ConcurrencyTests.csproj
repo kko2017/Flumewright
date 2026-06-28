@@ -33,8 +33,8 @@
     <ProjectReference Include="..\..\src\Flumewright.Broker.Core\Flumewright.Broker.Core.csproj" />
   </ItemGroup>
 
-  <Target Name="CoyoteRewriteTarget" AfterTargets="Build">
-    <Exec Command="coyote rewrite $(TargetPath)" />
+  <Target Name="CoyoteRewriteTarget">
+    <Exec Command="dotnet coyote rewrite $(TargetPath)" />
   </Target>
 
 </Project>
