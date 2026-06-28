@@ -43,6 +43,7 @@ internal class GroupCoordinator : IGroupCoordinator
         }
     }
 
+#pragma warning disable S3776 // intentional: concurrency-critical critical section; splitting would obscure lock atomicity / the cancellation-lifetime chain that Coyote (Layer 5) verifies. Correctness over metric.
     public async Task<GroupJoinResult> JoinGroupAsync(string groupId, string memberId, IReadOnlyList<string> topics, TimeSpan rebalanceTimeout, CancellationToken ct)
     {
         Task<RebalanceOutcome> waitTask;
@@ -152,6 +153,7 @@ internal class GroupCoordinator : IGroupCoordinator
         
         return new GroupJoinResult(outcome.Generation, GroupState.CompletingRebalance, isLeader, membersList);
     }
+#pragma warning restore S3776
 
     public async Task<GroupSyncResult> SyncGroupAsync(string groupId, string memberId, int generation, IReadOnlyDictionary<string, IReadOnlyList<TopicPartition>> assignments, CancellationToken ct)
     {

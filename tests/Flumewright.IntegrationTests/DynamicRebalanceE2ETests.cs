@@ -39,25 +39,25 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         using var c1TaskCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
         var c1Task = ConsumeAsync(c1, topic, partitionCounts, strategy, c1Messages, c1TaskCts.Token);
 
-        await EnsureReceivesFrom(publisher, topic, _partitions0123, c1Messages, cts.Token);
+        (await EnsureReceivesFrom(publisher, topic, _partitions0123, c1Messages, cts.Token)).Should().Contain(_partitions0123);
 
         using var c2 = new FlumewrightGroupConsumer(address, groupId, "member-2");
         var c2Messages = new List<ReceivedMessage>();
         var c2Task = ConsumeAsync(c2, topic, partitionCounts, strategy, c2Messages, cts.Token);
 
         lock (c1Messages) c1Messages.Clear();
-        await EnsureReceivesFrom(publisher, topic, _partitions23, c2Messages, cts.Token);
-        await EnsureReceivesFrom(publisher, topic, _partitions01, c1Messages, cts.Token);
+        (await EnsureReceivesFrom(publisher, topic, _partitions23, c2Messages, cts.Token)).Should().Contain(_partitions23);
+        (await EnsureReceivesFrom(publisher, topic, _partitions01, c1Messages, cts.Token)).Should().Contain(_partitions01);
 
         // Clear messages before wait
         lock (c1Messages) c1Messages.Clear();
-        await EnsureReceivesFrom(publisher, topic, _partitions01, c1Messages, cts.Token);
+        (await EnsureReceivesFrom(publisher, topic, _partitions01, c1Messages, cts.Token)).Should().Contain(_partitions01);
 
         await c1.LeaveGroupAsync(cts.Token);
         await c1TaskCts.CancelAsync();
         
         lock (c2Messages) c2Messages.Clear();
-        await EnsureReceivesFrom(publisher, topic, _partitions0123, c2Messages, cts.Token);
+        (await EnsureReceivesFrom(publisher, topic, _partitions0123, c2Messages, cts.Token)).Should().Contain(_partitions0123);
 
         await cts.CancelAsync();
         await Task.WhenAll(c1Task, c2Task);
@@ -260,7 +260,7 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         }
     }
 
-    private static async Task EnsureReceivesFrom(FlumewrightPublisher publisher, string topic, int[] expectedPartitions, List<ReceivedMessage> targetList, CancellationToken ct)
+    private static async Task<List<int>> EnsureReceivesFrom(FlumewrightPublisher publisher, string topic, int[] expectedPartitions, List<ReceivedMessage> targetList, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -276,10 +276,14 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
                 var receivedPartitions = targetList.Select(m => m.Partition).Distinct().OrderBy(p => p).ToList();
                 if (expectedPartitions.All(p => receivedPartitions.Contains(p)))
                 {
-                    return;
+                    return receivedPartitions;
                 }
             }
         }
-        ct.ThrowIfCancellationRequested();
+        
+        lock (targetList)
+        {
+            return targetList.Select(m => m.Partition).Distinct().OrderBy(p => p).ToList();
+        }
     }
 }

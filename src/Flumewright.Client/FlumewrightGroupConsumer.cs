@@ -142,6 +142,7 @@ public sealed class FlumewrightGroupConsumer : IDisposable
         }
     }
 
+#pragma warning disable S3776 // intentional: concurrency-critical critical section; splitting would obscure lock atomicity / the cancellation-lifetime chain that Coyote (Layer 5) verifies. Correctness over metric.
     private async IAsyncEnumerable<ReceivedMessage> RunSingleGenerationAsync(
         IReadOnlyList<string> topics,
         IReadOnlyDictionary<string, int> partitionCounts,
@@ -280,6 +281,7 @@ public sealed class FlumewrightGroupConsumer : IDisposable
             }
         }
     }
+#pragma warning restore S3776
 
     public async Task CommitOffsetAsync(string topic, int partition, long offset, CancellationToken ct = default)
     {

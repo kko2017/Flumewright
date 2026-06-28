@@ -34,29 +34,34 @@ public class RangeAssignmentStrategy : IAssignmentStrategy
             if (consumersForTopic.Count == 0)
                 continue;
 
-            int numPartitionsPerConsumer = partitionCount / consumersForTopic.Count;
-            int consumersWithExtraPartition = partitionCount % consumersForTopic.Count;
-
-            int partitionIndex = 0;
-            for (int i = 0; i < consumersForTopic.Count; i++)
-            {
-                int numPartitions = numPartitionsPerConsumer + (i < consumersWithExtraPartition ? 1 : 0);
-                if (numPartitions > 0)
-                {
-                    var assignment = new MemberAssignment
-                    {
-                        MemberId = consumersForTopic[i],
-                        Topic = topic
-                    };
-                    for (int p = 0; p < numPartitions; p++)
-                    {
-                        assignment.Partitions.Add(partitionIndex++);
-                    }
-                    assignments.Add(assignment);
-                }
-            }
+            BuildAssignmentForTopic(topic, partitionCount, consumersForTopic, assignments);
         }
 
         return assignments;
+    }
+
+    private void BuildAssignmentForTopic(string topic, int partitionCount, List<string> consumersForTopic, List<MemberAssignment> assignments)
+    {
+        int numPartitionsPerConsumer = partitionCount / consumersForTopic.Count;
+        int consumersWithExtraPartition = partitionCount % consumersForTopic.Count;
+
+        int partitionIndex = 0;
+        for (int i = 0; i < consumersForTopic.Count; i++)
+        {
+            int numPartitions = numPartitionsPerConsumer + (i < consumersWithExtraPartition ? 1 : 0);
+            if (numPartitions > 0)
+            {
+                var assignment = new MemberAssignment
+                {
+                    MemberId = consumersForTopic[i],
+                    Topic = topic
+                };
+                for (int p = 0; p < numPartitions; p++)
+                {
+                    assignment.Partitions.Add(partitionIndex++);
+                }
+                assignments.Add(assignment);
+            }
+        }
     }
 }
