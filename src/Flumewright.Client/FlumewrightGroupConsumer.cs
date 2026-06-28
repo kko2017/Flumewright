@@ -278,7 +278,8 @@ public sealed class FlumewrightGroupConsumer : IDisposable
                 {
                     await heartbeatTask;
                 }
-                catch (OperationCanceledException) { }
+                catch (OperationCanceledException) { // [suppress: the background heartbeat task is intentionally cancelled on rebalance/shutdown] 
+                }
             }
         }
     }
@@ -318,7 +319,8 @@ public sealed class FlumewrightGroupConsumer : IDisposable
         {
             _client.LeaveGroup(new LeaveGroupRequest { GroupId = _groupId, MemberId = _memberId });
         }
-        catch (RpcException) { }
+        catch (RpcException) { // [suppress: best-effort cleanup during Dispose; the broker or network may already be unreachable]
+        }
         
         _channel?.Dispose();
     }

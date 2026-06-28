@@ -20,9 +20,7 @@ public class FlumewrightGroupConsumerTests
         // Use static assign first
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
         var assignEnumerable = consumer.AssignAsync("topic", new[] { 0, 1 }, ct: cts.Token);
-#pragma warning disable CA1031
-        try { await assignEnumerable.GetAsyncEnumerator().MoveNextAsync(); } catch (Exception) { } 
-#pragma warning restore CA1031
+        await assignEnumerable.GetAsyncEnumerator().MoveNextAsync();
 
         // Now try dynamic subscribe
         var subscribeAction = async () =>
@@ -51,9 +49,7 @@ public class FlumewrightGroupConsumerTests
             new Dictionary<string, int>(),
             new RangeAssignmentStrategy(),
             ct: cts.Token);
-#pragma warning disable CA1031
-        try { await subscribeEnumerable.GetAsyncEnumerator().MoveNextAsync(); } catch (Exception) { } 
-#pragma warning restore CA1031
+        await subscribeEnumerable.GetAsyncEnumerator().MoveNextAsync();
 
         // Now try static assign
         var assignAction = async () =>
@@ -90,6 +86,22 @@ public class FlumewrightGroupConsumerTests
         {
             var res = OnHeartbeat?.Invoke(request) ?? Task.FromResult(new HeartbeatResponse { Ok = true });
             return new Grpc.Core.AsyncUnaryCall<HeartbeatResponse>(res, Task.FromResult(new Grpc.Core.Metadata()), () => Grpc.Core.Status.DefaultSuccess, () => new Grpc.Core.Metadata(), () => { });
+        }
+
+        private class FakeStreamReader : Grpc.Core.IAsyncStreamReader<DeliverEnvelope>
+        {
+            public DeliverEnvelope Current => default!;
+            public Task<bool> MoveNext(CancellationToken cancellationToken) => Task.FromResult(false);
+        }
+
+        public override Grpc.Core.AsyncServerStreamingCall<DeliverEnvelope> Subscribe(SubscribeRequest request, Grpc.Core.CallOptions options)
+        {
+            return new Grpc.Core.AsyncServerStreamingCall<DeliverEnvelope>(
+                new FakeStreamReader(),
+                Task.FromResult(new Grpc.Core.Metadata()),
+                () => Grpc.Core.Status.DefaultSuccess,
+                () => new Grpc.Core.Metadata(),
+                () => { });
         }
     }
 

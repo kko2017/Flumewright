@@ -253,7 +253,8 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
                 lock (targetList) targetList.Add(msg);
             }
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { // [suppress: the test stops background consumers by cancelling their tokens]
+        }
     }
 
     private async Task EnsureReceivesFrom(FlumewrightPublisher publisher, string topic, int[] expectedPartitions, List<ReceivedMessage> targetList, CancellationToken ct)
