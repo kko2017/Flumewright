@@ -8,6 +8,8 @@ Design, learning, and process documents for Flumewright. (The project overview i
 - [Concurrency Strategy](design/concurrency-strategy.md) — how concurrency correctness is defended in depth (five layers); the hazards, the tooling, and the bugs caught
 - [M1 Design Note — gRPC Contract + Plaintext Broker](design/m1-grpc-contract.md) — the first end-to-end vertical slice
 - [M2 Design Note — Partition Log Model](design/m2-partitioning.md) — per-partition append-only log, offset-based consumption
+- [M3b Design Note — Redelivery & Dead-Letter Queue](design/m3b-redelivery-dlq.md) — non-blocking retry over a `{topic}.retry` topic, DLQ quarantine, all on plain topics
+- [M3c Design Note — Rebalance / Dynamic Assignment](design/m3c-rebalance.md) — eager rebalancing, the group coordinator, generation fencing, the three-state machine
 
 ## Learning
 - [Message Bus & PubSub Study Notes](learning/study-notes.md) — PubSub/message-bus concepts, the log model, test design

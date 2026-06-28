@@ -355,6 +355,12 @@ time — systematic interleaving exploration:
   gRPC-based integration tests for end-to-end behavior; and Coyote concurrency unit tests aimed squarely at the
   coordinator component. The set of assemblies to rewrite (coordinator + its dependencies, not the gRPC/Kestrel
   host) and the exact critical sections to model are set at design review.
+  - **Two lessons learned wiring Coyote up (M3c):** (1) Coyote only controls Tasks in a **rewritten** assembly —
+    the test assembly holding the tests' own `Task.Run` must itself be in the rewrite set, or Coyote explores 0
+    iterations while still reporting "0 bugs" (verify the *explored-iteration count*, not just the bug count).
+    (2) Assertions must be **outcome-branched**: observe which interleaving occurred and assert the exact
+    invariant for that branch — over-asserting one interleaving fails falsely on a valid schedule; asserting
+    nothing is fake-green. (See 09 FIX-016, 11 Layer 5.)
 
 Bounded waits (FIX-008), no fake-green (FIX-012), no `Task.Delay`-as-sync, exact assertions — same disciplines
 as M3a/M3b.
