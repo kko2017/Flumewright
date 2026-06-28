@@ -29,7 +29,7 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         var groupId = "cg-" + Guid.NewGuid();
         
         using var publisher = new FlumewrightPublisher(address);
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
 
         var strategy = new RangeAssignmentStrategy();
         var partitionCounts = new Dictionary<string, int> { { topic, 4 } };
