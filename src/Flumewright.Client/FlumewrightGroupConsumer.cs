@@ -10,7 +10,7 @@ using Grpc.Net.Client;
 
 namespace Flumewright.Client;
 
-internal enum ClientGroupErrorCode
+public enum ClientGroupErrorCode
 {
     Ok = 0,
     Fenced = 1,
@@ -164,7 +164,7 @@ public sealed class FlumewrightGroupConsumer : IDisposable
         var joinRes = await _client.JoinGroupAsync(joinReq, cancellationToken: loopCt);
         if (!joinRes.Ok)
         {
-            throw new Exception($"JoinGroup failed: {joinRes.Reason}");
+            throw new GroupMembershipException($"JoinGroup failed: {joinRes.Reason}", joinRes.Code.ToClientCode());
         }
 
         _currentGeneration = joinRes.Generation;
@@ -225,7 +225,7 @@ public sealed class FlumewrightGroupConsumer : IDisposable
                             }
                             else
                             {
-                                throw new Exception($"Heartbeat failed: {hbRes.Reason} (Code: {clientCode})");
+                                throw new GroupMembershipException($"Heartbeat failed: {hbRes.Reason} (Code: {clientCode})", clientCode);
                             }
                         }
                     }

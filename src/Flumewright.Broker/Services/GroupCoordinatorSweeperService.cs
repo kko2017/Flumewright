@@ -33,11 +33,13 @@ internal class GroupCoordinatorSweeperService : BackgroundService
         {
             // normal shutdown
         }
+#pragma warning disable S2139 // intentional: log + rethrow so a background liveness-service crash surfaces to the host (FIX-015, no silent swallow)
         catch (Exception ex)
         {
             // Do not swallow exceptions (FIX-015 discipline)
             _logger.LogCritical(ex, "Sweeper loop crashed.");
             throw;
         }
+#pragma warning restore S2139
     }
 }
