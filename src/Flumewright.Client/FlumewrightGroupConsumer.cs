@@ -191,10 +191,7 @@ public sealed class FlumewrightGroupConsumer : IDisposable
         }
 
         finalAssignment = syncRes.Assignments;
-        if (syncRes.Generation != _currentGeneration)
-        {
-            _currentGeneration = syncRes.Generation;
-        }
+        _currentGeneration = syncRes.Generation;
 
         // 4. Start Heartbeat loop
         Task? heartbeatTask = null;

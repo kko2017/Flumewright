@@ -24,7 +24,7 @@ internal class GroupCoordinator : IGroupCoordinator
         return group;
     }
 
-    private void StartRebalance(ConsumerGroup group)
+    private static void StartRebalance(ConsumerGroup group)
     {
         group.State = GroupState.PreparingRebalance;
         group.Generation++;
@@ -144,12 +144,9 @@ internal class GroupCoordinator : IGroupCoordinator
         lock (_lock)
         {
             var group = GetOrAddGroup(groupId);
-            if (isLeader)
+            if (isLeader && (group.SyncTcs == null || group.SyncTcs.Task.IsCompleted || group.SyncTcs.Task.IsCanceled))
             {
-                if (group.SyncTcs == null || group.SyncTcs.Task.IsCompleted || group.SyncTcs.Task.IsCanceled)
-                {
-                    group.SyncTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                }
+                group.SyncTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             }
         }
         
@@ -286,7 +283,7 @@ internal class GroupCoordinator : IGroupCoordinator
         return null;
     }
 
-    private bool TopicsEqual(IReadOnlyList<string> a, IReadOnlyList<string> b)
+    private static bool TopicsEqual(IReadOnlyList<string> a, IReadOnlyList<string> b)
     {
         if (a.Count != b.Count) return false;
         for (int i = 0; i < a.Count; i++)
@@ -296,7 +293,7 @@ internal class GroupCoordinator : IGroupCoordinator
         return true;
     }
 
-    private class ConsumerGroup
+    private sealed class ConsumerGroup
     {
         public string GroupId { get; }
         private int _generation;
@@ -320,7 +317,7 @@ internal class GroupCoordinator : IGroupCoordinator
         }
     }
 
-    private class GroupMember
+    private sealed class GroupMember
     {
         public string MemberId { get; }
         public IReadOnlyList<string> Topics { get; set; }

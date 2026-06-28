@@ -10,6 +10,7 @@ namespace Flumewright.UnitTests;
 
 public class InMemoryCommittedOffsetStoreTests
 {
+    private static readonly string[] _t1Array = new[] { "t1" };
     [Fact]
     [Trait("Category", "Unit")]
     public async Task GetCommittedOffset_InitialState_ReturnsNull()
@@ -196,7 +197,7 @@ public class InMemoryCommittedOffsetStoreTests
         await topicStore.PublishAsync("t1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
         
         var coordinator = new GroupCoordinator();
-        var res = await coordinator.JoinGroupAsync("g1", "m1", new[] { "t1" }, TimeSpan.FromMilliseconds(10), CancellationToken.None);
+        var res = await coordinator.JoinGroupAsync("g1", "m1", _t1Array, TimeSpan.FromMilliseconds(10), CancellationToken.None);
         int currentGen = res.Generation;
 
         // Force a generation bump by removing the member

@@ -12,12 +12,15 @@ namespace Flumewright.ConcurrencyTests
 {
     public class CoordinatorConcurrencyTests
     {
+        private static readonly string[] _topic1Array = new[] { "topic1" };
+        private static readonly string[] _t1Array = new[] { "t1" };
+
         [Microsoft.Coyote.SystematicTesting.Test]
         internal static async Task TestConcurrentJoinAndLeave()
         {
             var coordinator = new GroupCoordinator();
             string groupId = "test-group";
-            var topics = new[] { "topic1" };
+            var topics = _topic1Array;
 
             GroupJoinResult? r1 = null;
             GroupJoinResult? r2 = null;
@@ -99,7 +102,7 @@ namespace Flumewright.ConcurrencyTests
             var coordinator = new GroupCoordinator();
             string groupId = "test-group";
             
-            var r1 = await coordinator.JoinGroupAsync(groupId, "m1", new[] { "t1" }, TimeSpan.FromHours(1), CancellationToken.None);
+            var r1 = await coordinator.JoinGroupAsync(groupId, "m1", _t1Array, TimeSpan.FromHours(1), CancellationToken.None);
             int gen = r1.Generation;
 
             GroupErrorCode hbResult = GroupErrorCode.GroupUnknownMember;
@@ -135,7 +138,7 @@ namespace Flumewright.ConcurrencyTests
             var coordinator = new GroupCoordinator();
             string groupId = "test-group";
             
-            var r1 = await coordinator.JoinGroupAsync(groupId, "m1", new[] { "t1" }, TimeSpan.FromHours(1), CancellationToken.None);
+            var r1 = await coordinator.JoinGroupAsync(groupId, "m1", _t1Array, TimeSpan.FromHours(1), CancellationToken.None);
             int oldGen = r1.Generation;
 
             GroupErrorCode hbResult = GroupErrorCode.GroupOk;
@@ -149,7 +152,7 @@ namespace Flumewright.ConcurrencyTests
             bool m2Joined = false;
             var t2 = Task.Run(async () => {
                 try {
-                    await coordinator.JoinGroupAsync(groupId, "m2", new[] { "t1" }, TimeSpan.FromHours(1), cts.Token);
+                    await coordinator.JoinGroupAsync(groupId, "m2", _t1Array, TimeSpan.FromHours(1), cts.Token);
                     m2Joined = true;
                 } catch (InvalidOperationException) {
                     // [suppress: intended cancel-first interleaving]

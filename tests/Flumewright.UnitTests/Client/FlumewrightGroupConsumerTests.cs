@@ -11,6 +11,8 @@ namespace Flumewright.UnitTests.Client;
 
 public class FlumewrightGroupConsumerTests
 {
+    private static readonly string[] _topicArray = new[] { "topic" };
+    private static readonly int[] _zeroOneArray = new[] { 0, 1 };
     [Fact]
     public async Task CombineStaticAndDynamic_ThrowsInvalidOperationException()
     {
@@ -19,14 +21,14 @@ public class FlumewrightGroupConsumerTests
 
         // Use static assign first
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
-        var assignEnumerable = consumer.AssignAsync("topic", new[] { 0, 1 }, ct: cts.Token);
+        var assignEnumerable = consumer.AssignAsync("topic", _zeroOneArray, ct: cts.Token);
         await assignEnumerable.GetAsyncEnumerator().MoveNextAsync();
 
         // Now try dynamic subscribe
         var subscribeAction = async () =>
         {
             var dynamicEnum = consumer.SubscribeAsync(
-                new[] { "topic" },
+                _topicArray,
                 new Dictionary<string, int>(),
                 new RangeAssignmentStrategy());
             await dynamicEnum.GetAsyncEnumerator().MoveNextAsync();
@@ -45,7 +47,7 @@ public class FlumewrightGroupConsumerTests
         // Use dynamic subscribe first
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
         var subscribeEnumerable = consumer.SubscribeAsync(
-            new[] { "topic" },
+            _topicArray,
             new Dictionary<string, int>(),
             new RangeAssignmentStrategy(),
             ct: cts.Token);
@@ -54,7 +56,7 @@ public class FlumewrightGroupConsumerTests
         // Now try static assign
         var assignAction = async () =>
         {
-            var assignEnum = consumer.AssignAsync("topic", new[] { 0, 1 });
+            var assignEnum = consumer.AssignAsync("topic", _zeroOneArray);
             await assignEnum.GetAsyncEnumerator().MoveNextAsync();
         };
 
@@ -115,7 +117,7 @@ public class FlumewrightGroupConsumerTests
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var enumerable = consumer.SubscribeAsync(
-            new[] { "topic" },
+            _topicArray,
             new Dictionary<string, int>(),
             new RangeAssignmentStrategy(),
             heartbeatInterval: TimeSpan.FromMilliseconds(50),
@@ -150,7 +152,7 @@ public class FlumewrightGroupConsumerTests
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var enumerable = consumer.SubscribeAsync(
-            new[] { "topic" },
+            _topicArray,
             new Dictionary<string, int>(),
             new RangeAssignmentStrategy(),
             heartbeatInterval: TimeSpan.FromMilliseconds(50),

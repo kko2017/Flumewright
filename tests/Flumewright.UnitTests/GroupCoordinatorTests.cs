@@ -10,13 +10,15 @@ namespace Flumewright.UnitTests;
 
 public class GroupCoordinatorTests
 {
+    private static readonly string[] _topic1Array = new[] { "topic1" };
+    private static readonly string[] _t1Array = new[] { "t1" };
     private readonly GroupCoordinator _coordinator = new();
     private const string GroupId = "test-group";
 
     [Fact]
     public async Task JoinGroup_TransitionsToRebalancing_AndAssignsLeader()
     {
-        var task = _coordinator.JoinGroupAsync(GroupId, "member1", new[] { "topic1" }, TimeSpan.FromMilliseconds(50), CancellationToken.None);
+        var task = _coordinator.JoinGroupAsync(GroupId, "member1", _topic1Array, TimeSpan.FromMilliseconds(50), CancellationToken.None);
         
         var result = await task;
         
@@ -34,7 +36,7 @@ public class GroupCoordinatorTests
     [Fact]
     public async Task RemoveMember_BumpsGeneration_AndTransitionsToRebalancing()
     {
-        await _coordinator.JoinGroupAsync(GroupId, "member1", new[] { "topic1" }, TimeSpan.FromMilliseconds(10), CancellationToken.None);
+        await _coordinator.JoinGroupAsync(GroupId, "member1", _topic1Array, TimeSpan.FromMilliseconds(10), CancellationToken.None);
         await _coordinator.SyncGroupAsync(GroupId, "member1", 1, new Dictionary<string, IReadOnlyList<TopicPartition>>(), CancellationToken.None);
         
         bool removed = _coordinator.RemoveMember(GroupId, "member1");
@@ -49,7 +51,7 @@ public class GroupCoordinatorTests
     [Fact]
     public async Task SyncGroup_WithWrongGeneration_Throws()
     {
-        await _coordinator.JoinGroupAsync(GroupId, "member1", new[] { "topic1" }, TimeSpan.FromMilliseconds(10), CancellationToken.None);
+        await _coordinator.JoinGroupAsync(GroupId, "member1", _topic1Array, TimeSpan.FromMilliseconds(10), CancellationToken.None);
         
         await Assert.ThrowsAsync<InvalidOperationException>(() => 
             _coordinator.SyncGroupAsync(GroupId, "member1", 999, new Dictionary<string, IReadOnlyList<TopicPartition>>(), CancellationToken.None));
@@ -58,7 +60,7 @@ public class GroupCoordinatorTests
     [Fact]
     public async Task Heartbeat_ReturnsRebalanceInProgress_WhenRebalancing()
     {
-        await _coordinator.JoinGroupAsync(GroupId, "member1", new[] { "topic1" }, TimeSpan.FromMilliseconds(10), CancellationToken.None);
+        await _coordinator.JoinGroupAsync(GroupId, "member1", _topic1Array, TimeSpan.FromMilliseconds(10), CancellationToken.None);
         
         var code = _coordinator.RecordHeartbeat(GroupId, "member1", 1);
         
@@ -68,7 +70,7 @@ public class GroupCoordinatorTests
     [Fact]
     public async Task Heartbeat_WithStaleGeneration_Rejected()
     {
-        await _coordinator.JoinGroupAsync(GroupId, "member1", new[] { "topic1" }, TimeSpan.FromMilliseconds(10), CancellationToken.None);
+        await _coordinator.JoinGroupAsync(GroupId, "member1", _topic1Array, TimeSpan.FromMilliseconds(10), CancellationToken.None);
         var state = _coordinator.GetGroupState(GroupId);
         int currentGen = state!.Generation;
 
@@ -81,7 +83,7 @@ public class GroupCoordinatorTests
     [Fact]
     public async Task Lifecycle_TransitionsSuccessfully()
     {
-        var res1 = await _coordinator.JoinGroupAsync(GroupId, "m1", new[] { "t1" }, TimeSpan.FromMilliseconds(50), CancellationToken.None);
+        var res1 = await _coordinator.JoinGroupAsync(GroupId, "m1", _t1Array, TimeSpan.FromMilliseconds(50), CancellationToken.None);
         Assert.Equal(1, res1.Generation);
         Assert.Equal(GroupState.CompletingRebalance, res1.State);
         
@@ -126,7 +128,7 @@ public class GroupCoordinatorTests
                     string memberId = $"member-{threadId}-{j}";
                     try
                     {
-                        var res = await _coordinator.JoinGroupAsync(GroupId, memberId, new[] { "topic1" }, TimeSpan.FromMilliseconds(1), CancellationToken.None);
+                        var res = await _coordinator.JoinGroupAsync(GroupId, memberId, _topic1Array, TimeSpan.FromMilliseconds(1), CancellationToken.None);
                         successfulReturns.Add((memberId, res.Generation));
                         
                         Assert.True(res.Generation >= lastObservedGen, "Generation must not decrease");
@@ -172,7 +174,7 @@ public class GroupCoordinatorTests
     [Fact]
     public async Task SweepDeadMembers_EvictsMembers_AndBumpsGeneration()
     {
-        await _coordinator.JoinGroupAsync(GroupId, "m1", new[] { "t1" }, TimeSpan.FromMilliseconds(10), CancellationToken.None);
+        await _coordinator.JoinGroupAsync(GroupId, "m1", _t1Array, TimeSpan.FromMilliseconds(10), CancellationToken.None);
         
         var state = _coordinator.GetGroupState(GroupId);
         Assert.Equal(1, state!.Generation);
@@ -188,7 +190,7 @@ public class GroupCoordinatorTests
     [Fact]
     public async Task ConcurrentHeartbeatAndSweep_ResolvesToSingleOutcome()
     {
-        await _coordinator.JoinGroupAsync(GroupId, "m1", new[] { "t1" }, TimeSpan.FromMilliseconds(10), CancellationToken.None);
+        await _coordinator.JoinGroupAsync(GroupId, "m1", _t1Array, TimeSpan.FromMilliseconds(10), CancellationToken.None);
         await _coordinator.SyncGroupAsync(GroupId, "m1", 1, new Dictionary<string, IReadOnlyList<TopicPartition>>(), CancellationToken.None);
         
         var state = _coordinator.GetGroupState(GroupId);
