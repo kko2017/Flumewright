@@ -62,6 +62,8 @@ silence is the danger — and the reason a single layer of review is not enough.
 | **Non-monotonic generation** *(M3c)* | The coordinator's generation token must increase by exactly one per membership change, atomically with that change. If the bump is not in the same critical section as the change (a race on the counter), two rebalances can collide on one generation or skip one — and the generation fence (which rejects stale commits) silently stops protecting. Generation monotonicity-under-contention is asserted by a real-contention test (start-gate, would fail with the lock removed). |
 | **Rebalance-phase boundary race** *(M3c)* | The rebalance is a three-state machine (Stable → PreparingRebalance → CompletingRebalance → Stable), not two states. A join must be classified against the state *atomically inside the coordinator lock*: admitted to the current generation only while PreparingRebalance, otherwise it triggers a fresh rebalance. Collapsing this to one "rebalancing" state opens an orphan window — a member that joins after membership closed but before the leader distributes the assignment is silently included in a generation the leader computed without it (assigned nothing, believes it is healthy). Guarded by the Preparing→Completing transition; asserted by "every member that returns for generation N is in the leader's generation-N snapshot." |
 | **Lock-free read across components** *(M3c, pattern not hazard)* | The commit fence must check the current generation *inside the offset-store lock*, but must NOT take the coordinator lock there (offsetStore→coordinator nesting is a deadlock-ordering hazard once a reverse path appears). Resolution: the coordinator exposes its generation via a lock-free read (`Volatile.Read` over a `ConcurrentDictionary`), so the offset store reads it inside its own lock without acquiring a second lock. The fence stays atomic with the offset update; no cross-component lock is held. This is the safe pattern for "validate against another component's state without nesting locks." |
+| **Interleaving-dependent assertion** *(M3c, test hazard)* | A concurrency test where the race has several valid final states (depending on the interleaving) must not assert one fixed outcome (false failure on a valid schedule) nor assert nothing meaningful (fake-green). Both are failures of the same kind. The correct shape — surfaced when Coyote explored schedules a luck-based test never reached — is to **observe which interleaving actually occurred, branch on it, and assert the exact invariant for that branch** (e.g. sweeper-won → evicted + generation bumped; heartbeat-won → kept + generation unchanged). This is the twin of the fake-green hazard: too-weak hides bugs, too-strong invents failures. |
+| **Coyote that never actually runs** *(M3c, tooling hazard)* | Coyote can only control Tasks in a **rewritten** assembly. If the test assembly holding the test's own `Task.Run`/`Task.WhenAll` is not in `coyote.json`, those Tasks run as native ThreadPool tasks invisible to the engine; Coyote finds zero controlled operations, declares deadlock, and explores **0 iterations** — yet still reports "0 bugs." This is the extreme fake-green: a layer that silently does nothing reports the same result as one that proved correctness. Guard: the test assembly must be in the rewrite set, and the check is **"explored ~N iterations, 0 bugs"** (verify `engine.TestReport`'s iteration count), never "0 bugs" alone. (See FIX-016, DEC-025.) |
 
 These are the failure modes the layers below are designed to catch. The last row is different in kind from
 the others: it is not a hazard to *eliminate* but a trade-off to *accept consciously*. Where two operations
@@ -86,7 +88,7 @@ hazard has to pass through **all five** to reach `main`.
 | 2 | Human checkpoints + isolated AI reviewer | risk-based checkpoints (DEC-013), `code-review` skill (Gemini sub-agent) | in place |
 | 3 | Static analysis (mechanical, build/CI) | **Roslyn analyzers** (CA1031, **VSTHRD threading**), **SonarCloud**, **CodeQL** | in place |
 | 4 | Concurrency tests (behavioral) | **xUnit** concurrency tests, flaky-test discipline | in place |
-| 5 | Systematic concurrency exploration | **Microsoft Coyote** | being introduced in M3c |
+| 5 | Systematic concurrency exploration | **Microsoft Coyote** | active (M3c): coordinator + offset store |
 
 
 ### Layer 1 — Code patterns (prevention at write time) *— in place*
@@ -116,9 +118,13 @@ Tooling: **xUnit** concurrency tests + flaky-test discipline.
 - **Concurrency unit tests**: e.g. 1,000 concurrent appends asserting offsets are unique and contiguous — exercising lock integrity and atomic state.
 - **Flaky-test discipline**: deterministic properties get tight assertions; probabilistic ones get generous ranges; every async wait has a bounded timeout so a failure fails fast instead of hanging (FIX-008). A flaky test is treated as a defect, not noise.
 
-### Layer 5 — Systematic concurrency testing (Microsoft Coyote) *— being introduced in M3c*
+### Layer 5 — Systematic concurrency testing (Microsoft Coyote) *— active (M3c)*
 Tooling: **Microsoft Coyote**.
-- Coyote rewrites and controls task scheduling to **deterministically explore interleavings**, reproducing races and deadlocks that ordinary tests hit only by luck. It was reserved for the point where consumer-group assignment and offset-commit concurrency make the schedule space large enough to need it — that point is **M3c (rebalance)**, which adds the group coordinator: membership, the session-timeout sweeper, generation fencing, and handover, all racing in-flight processing. M3c is where Coyote is introduced (the coordinator's concurrency unit tests are M3c's Step 8). Scope note: Coyote controls **in-process** Task scheduling, so it targets the coordinator component directly, not the gRPC/Kestrel host — the rewrite set is the coordinator assembly + its deps, and the integration tests (over real gRPC) remain a separate layer. This is the answer to "as the code grows, these bugs get harder to find by reading": a machine explores the schedules a human or an ordinary test never will.
+- Coyote rewrites and controls task scheduling to **deterministically explore interleavings**, reproducing races and deadlocks that ordinary tests hit only by luck. It was reserved for the point where consumer-group assignment and offset-commit concurrency make the schedule space large enough to need it — that point is **M3c (rebalance)**, which adds the group coordinator: membership, the session-timeout sweeper, generation fencing, and handover, all racing in-flight processing.
+- **Active coverage (M3c):** the **group coordinator** (join/leave/sweep/fence interleavings — Step 8) and the **committed-offset store** (commit serialization + the generation-fence-vs-commit race — Step 8.5). Both explore ~100 schedules per test with outcome-branched assertions.
+- **How rewriting works, and its danger.** Coyote *binary-rewrites* an assembly to hook every Task and scheduling primitive, replacing the runtime's scheduler with its own so it can drive the interleavings. That makes the rewritten binary a **modified, test-only artifact** — it must never run in production. And because rewriting affects **every** Task in the assembly, Coyote tests live in a **dedicated assembly** (`Flumewright.ConcurrencyTests`, the only test assembly in `coyote.json`); ordinary xUnit tests stay in a non-rewritten assembly, or Coyote's scheduler would hijack their Tasks. **Coyote only controls Tasks in a rewritten assembly** — if the test assembly itself is not rewritten, the test's own Tasks are invisible, the engine explores 0 iterations, and still reports "0 bugs" (the FIX-016 trap). So a Coyote result is trusted only when `engine.TestReport` shows it **actually explored ~N iterations**, not merely "0 bugs."
+- **Scope.** Coyote controls **in-process** Task scheduling, so it targets components directly, not the gRPC/Kestrel host — the integration tests (over real gRPC) remain a separate layer. **Coverage roadmap:** coordinator + offset store are covered now (M3c); extending Coyote to the **topic store** and any remaining in-process concurrency core is explicit **follow-up work** (post-M3), recorded so this layer's coverage is a documented promise, not a label. (See DEC-025.)
+- This is the answer to "as the code grows, these bugs get harder to find by reading": a machine explores the schedules a human or an ordinary test never will — but only if it is actually wired to run.
 
 ---
 
@@ -171,16 +177,27 @@ Concurrency defense is not theoretical here; the layers have already paid off:
   suppressed (FIX-008). The `code-review` checklist's fire-and-forget item now explicitly covers `WhenAny`
   survivors and background test pumps.
 
+- **FIX-016 — the Coyote layer was never actually running (Checkpoint D false-positive).** `coyote.json`
+  rewrote only the production assembly, not the test assembly holding the tests' own `Task.Run`/`Task.WhenAll`,
+  so Coyote controlled zero of the tests' Tasks: it found no controlled operations at the first `await`,
+  declared deadlock, explored **0 iterations**, and still reported "0 bugs." Checkpoint D had been signed off
+  on that false-positive. Caught not by a layer but by **reading the engine's behaviour** during the next step
+  (8.5) — the tell was a 0-iteration immediate termination. The fix rewrites the test assembly too and verifies
+  the **explored iteration count**, not just the bug count. Once it actually ran, Coyote immediately surfaced a
+  real test-level deadlock — Layer 5 finally doing its job. A defense layer that silently does nothing is worse
+  than none, because it reports the same "0 bugs" as a layer that proved correctness.
+
 The lesson that shapes this whole document: **these bugs were caught by different layers, and no single
 layer would have caught them all.** Human reasoning catches semantic/concurrency bugs a person can think
 through (FIX-009, FIX-013); mechanical analysis catches the empty-catch a person skims over (FIX-010); the
 isolated reviewer catches both a semantics call it knows to escalate (FIX-011) and a hollow test the author
 is blind to (FIX-012); and a behavioural integration test catches an off-by-one a diff review cannot see
 (FIX-014), while the isolated reviewer catches the swallowed-exception shape that the author reproduced one
-layer up (FIX-015). And when a review finds a gap in its own checklist, that gap becomes a permanent
-check (FIX-012 → the fake-green checklist item; FIX-015 → `WhenAny` survivors and test pumps under the
-fire-and-forget item). Neither layer alone is enough — which is why there are five, and why they feed each
-other.
+layer up (FIX-015). And a layer must be verified to be *running at all* — FIX-016 is the reminder that "0 bugs"
+from a tool that never executed is the most dangerous green of all. When a review finds a gap in its own
+checklist, that gap becomes a permanent check (FIX-012 → the fake-green checklist item; FIX-015 → `WhenAny`
+survivors and test pumps under the fire-and-forget item; FIX-016 → verify Coyote's explored-iteration count).
+Neither layer alone is enough — which is why there are five, and why they feed each other.
 
 ---
 
@@ -200,6 +217,7 @@ the concurrency passages.
 
 ---
 
-*Layer 5 (Coyote) is being introduced in M3c — the rebalance milestone whose coordinator concurrency is what
-it was reserved for; its concurrency unit tests land in M3c's Step 8. Layer 3 is fully in place (threading
-analyzers landed in DEC-021 stage 2). The strategy itself is in force now.*
+*Layer 5 (Coyote) is active as of M3c — the rebalance milestone whose coordinator concurrency is what it was
+reserved for; it now covers the group coordinator and the committed-offset store, with the topic store and
+remaining in-process core recorded as follow-up (DEC-025). Layer 3 is fully in place (threading analyzers
+landed in DEC-021 stage 2). The strategy itself is in force now.*

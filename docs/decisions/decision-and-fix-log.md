@@ -59,6 +59,8 @@ in the referenced DEC/FIX entry or design note; this table is the index.
 - [DEC-021 — Strengthen Roslyn analyzers to block FIX-010-class defects at build time 🔒](#dec-021--strengthen-roslyn-analyzers-to-block-fix-010-class-defects-at-build-time-)
 - [DEC-022 — A dedicated Concurrency Strategy doc (11), 🔒 cross-reference markers, and a reminder rule 🔒](#dec-022--a-dedicated-concurrency-strategy-doc-11--cross-reference-markers-and-a-reminder-rule-)
 - [DEC-023 — Offset commit semantics: committed = next offset to read (Kafka-style) 🔒](#dec-023--offset-commit-semantics-committed--next-offset-to-read-kafka-style-)
+- [DEC-024 — Typed group control-flow status (`GroupErrorCode`) over the wire, never string matching 🔒](#dec-024--typed-group-control-flow-status-grouperrorcode-over-the-wire-never-string-matching-)
+- [DEC-025 — Coyote is a dedicated assembly; its coverage is a documented roadmap, not a label 🔒](#dec-025--coyote-is-a-dedicated-assembly-its-coverage-is-a-documented-roadmap-not-a-label-)
 
 ### Fixes (FIX)
 - [FIX-001 — Fan-out broken: a shared per-topic channel delivered to only one subscriber](#fix-001--fan-out-broken-a-shared-per-topic-channel-delivered-to-only-one-subscriber)
@@ -76,6 +78,8 @@ in the referenced DEC/FIX entry or design note; this table is the index.
 - [FIX-013 — Step 3 duplicated fan-in + async LATEST resolution caused a test hang; fixed by unifying fan-in and resolving at entry 🔒](#fix-013--step-3-duplicated-fan-in--async-latest-resolution-caused-a-test-hang-fixed-by-unifying-fan-in-and-resolving-at-entry-)
 - [FIX-014 — RetryingConsumer committed the processed offset instead of the next offset (broke resume; surfaced by M3b integration tests) 🔒](#fix-014--retryingconsumer-committed-the-processed-offset-instead-of-the-next-offset-broke-resume-surfaced-by-m3b-integration-tests-)
 - [FIX-015 — Unawaited tasks in the dual-subscription helper and in the redelivery tests (swallowed-exception / fake-green risk) 🔒](#fix-015--unawaited-tasks-in-the-dual-subscription-helper-and-in-the-redelivery-tests-swallowed-exception--fake-green-risk-)
+- [FIX-016 — The Coyote layer was never actually running; Checkpoint D's "0 bugs / 100 iterations" was a false-positive 🔒](#fix-016--the-coyote-layer-was-never-actually-running-checkpoint-ds-0-bugs--100-iterations-was-a-false-positive-)
+- [FIX-017 — Other M3c checkpoint fixes (orphan window, cross-component lock, interleaving-dependent assertions) 🔒](#fix-017--other-m3c-checkpoint-fixes-orphan-window-cross-component-lock-interleaving-dependent-assertions-)
 
 ---
 
@@ -1097,3 +1101,113 @@ long-running tasks share a lifetime, "await the one that finished" is not enough
 too, or its faults vanish. The reviewer caught both the production instance and the test instance in one pass,
 which is why the `code-review` checklist's "unawaited Task / fire-and-forget" item now explicitly covers
 `WhenAny` survivors and background test pumps, not just bare `Task.Run`.
+
+## DEC-024 — Typed group control-flow status (`GroupErrorCode`) over the wire, never string matching 🔒
+
+**Context.** M3c, Step 7 / Checkpoint C. The SDK group client decided whether a heartbeat meant "rejoin" by
+matching `Reason.Contains("fenced")` against a human-readable string the broker put in `HeartbeatResponse.Reason`.
+The broker actually returned `"Invalid generation or member unknown"`, so the match failed and the client crashed
+instead of rejoining — the two sides silently disagreed on a string.
+
+**Decision.** Control flow never branches on string contents. A proto enum `GroupErrorCode`
+(`GROUP_OK` / `GROUP_FENCED` / `GROUP_REBALANCE_IN_PROGRESS` / `GROUP_UNKNOWN_MEMBER`) carries the status on the
+relevant responses (`HeartbeatResponse`, `CommitAck`, and the Join/Sync responses); `Reason` is demoted to a
+debug-only human message that must never be the basis of a branch. Scope was deliberately limited to the
+fencing/rebalance signals the defect touched — not a sweeping error-model refactor (that is deferred).
+
+The SDK adds a **conversion boundary**: an internal `ClientGroupErrorCode` and a `ToClientCode()` mapper at the
+gRPC edge, so client logic depends on the SDK's own type, not the proto directly, and an **unknown/unmapped code
+fails safe** — it throws `ArgumentOutOfRangeException` (surfaced to the caller), never a silent fall-through. This
+mirrors Kafka, whose protocol uses integer error codes (`ILLEGAL_GENERATION`, `REBALANCE_IN_PROGRESS`,
+`UNKNOWN_MEMBER_ID`), not string matching.
+
+**Lesson.** Encoding control-flow meaning in a human-readable string is brittle and unsafe: the contract lives
+only in two hand-written `.Contains(...)` calls that drift independently and fail silently. A typed code makes the
+contract compiler-checked on both sides, and an explicit unknown-code path turns "silently did nothing" into
+"loudly surfaced."
+
+## DEC-025 — Coyote is a dedicated assembly; its coverage is a documented roadmap, not a label 🔒
+
+**Context.** M3c, Step 8 / 8.5. Coyote (defense Layer 5) entered the project to systematically explore the
+coordinator's and offset store's concurrency interleavings. Two structural decisions were locked in.
+
+**Decision — dedicated Coyote-only assembly.** Coyote works by *binary-rewriting* an assembly to hook every
+`Task`/scheduling primitive so it controls the schedule. Rewriting affects **every** Task in the assembly, so the
+Coyote tests live in their own assembly, `Flumewright.ConcurrencyTests`, which is the only test assembly listed in
+`coyote.json`. Ordinary xUnit concurrency tests (the start-gate "thundering herd" tests) stay in
+`Flumewright.UnitTests`, which is **not** rewritten — mixing the two would let Coyote's scheduler hijack ordinary
+tests' Tasks and corrupt them. This isolation is asserted in an `AssemblyInfo.cs` comment so it cannot be violated
+silently. The existing herd tests are kept as fast luck-based regressions; Coyote is additive, not a replacement.
+
+**Decision — coverage roadmap (so "5-layer defense" is a promise, not a label).** Layer 5 is now genuinely active
+for the **group coordinator** (Step 8) and the **committed-offset store** (Step 8.5 — justified inside M3c because
+M3c added the generation fence to that class). Extending Coyote to the **topic store** and any remaining in-process
+concurrency core is recorded as explicit **follow-up work** (post-M3, a separate "concurrency-coverage" effort).
+Coyote covers only in-process Tasks — it cannot follow concurrency across the gRPC/network boundary, so the
+integration tests remain the coverage for that path.
+
+**Lesson.** A defense layer named in a strategy doc means nothing unless its scope is written down and verifiable.
+Recording exactly what Coyote does and does not yet cover keeps the "five layers" claim honest.
+
+## FIX-016 — The Coyote layer was never actually running; Checkpoint D's "0 bugs / 100 iterations" was a false-positive 🔒
+
+**Where:** `Flumewright.ConcurrencyTests` (`coyote.json` + the MSBuild rewrite step). M3c, Steps 8 and 8.5;
+diagnosed during Step 8.5 by reading the engine behaviour, *after* Checkpoint D had been reported passed.
+
+**Symptom.** `coyote.json` listed only the production assembly `Flumewright.Broker.Core` for rewriting. But the
+Coyote tests' own `Task.Run` / `Task.WhenAll` calls live in `Flumewright.ConcurrencyTests`, which was **not** in
+the rewrite list. Coyote can only control Tasks in a *rewritten* assembly, so the tests' Tasks ran as ordinary
+native ThreadPool tasks, invisible to the engine. At the first `await Task.WhenAll(...)`, the Coyote scheduler
+found **zero controlled operations**, concluded "deadlock," and terminated on the first schedule choice —
+exploring **0 iterations**. Both the Step 8 coordinator tests and the Step 8.5 offset-store tests were affected.
+Therefore Checkpoint D's reported "0 bugs across 100 iterations" was meaningless: Coyote never controlled a single
+interleaving. This is the extreme form of fake-green (FIX-012) — not a weak assertion, but a test that never
+actually ran.
+
+**Fix.**
+- Add `Flumewright.ConcurrencyTests` to `coyote.json` and inject the `coyote rewrite` step into the build so the
+  test assembly is rewritten on every build. After this, both test classes genuinely explore ~100 schedules.
+- Verify by reading `engine.TestReport`: the check is no longer "0 bugs" but **"actually explored ~100 iterations,
+  and 0 bugs"** — a real run reports explored schedules; a 0-iteration immediate deadlock is the tell.
+- Re-ran both Step 8 and Step 8.5 under real Coyote control to re-establish Checkpoint D on a genuine run.
+
+**What real exploration immediately found.** Once Coyote actually ran, it surfaced a test-level deadlock in
+`TestConcurrentJoinAndLeave`: the test used a 1-hour rebalance timeout (to avoid real-time dependence) and had no
+sweeper, so an interleaving where joining members are all removed left the join barrier unable to complete — a
+condition that in production is resolved by the rebalance timeout and the session-timeout sweeper, both absent in
+the in-process test. Fixed in the test by having members leave via `finally`, modelling the graceful-shutdown /
+sweeper path the real system provides. (The coordinator itself held: 0 real bugs in production code under all
+explored schedules.)
+
+**Lesson.** "0 bugs" from a systematic tester is meaningful only if it actually explored — a tool that silently
+does nothing reports the same "0 bugs" as a tool that proved correctness. Always verify the explored-iteration
+count, not just the bug count. The whole reason Coyote is Layer 5 is to catch what luck-based tests miss; a Coyote
+layer that never runs is worse than none, because it gives false confidence. (See DEC-025 for the assembly/rewrite
+discipline this established.)
+
+## FIX-017 — Other M3c checkpoint fixes (orphan window, cross-component lock, interleaving-dependent assertions) 🔒
+
+A batch of smaller M3c fixes caught at Checkpoints B and D, recorded briefly here; the durable hazards are in the
+Concurrency Strategy doc (11) and the m3c design note.
+
+- **Orphan window (Checkpoint B).** The coordinator's state machine was `Stable ↔ Rebalancing` (two states),
+  collapsing Kafka's two rebalance phases. A member joining after membership closed but before the leader
+  distributed the assignment was silently admitted to a generation computed without it — orphaned (healthy-looking,
+  zero partitions). Fixed by adopting the **three-state machine** (Stable → PreparingRebalance →
+  CompletingRebalance → Stable): a join during CompletingRebalance triggers a fresh rebalance rather than slipping
+  into the closed generation. Hidden by weak tests, which were strengthened to the orphan invariant ("every member
+  that returns for generation N is in the leader's generation-N snapshot").
+- **Cross-component lock (Checkpoint B).** `InMemoryCommittedOffsetStore.CommitOffsetAsync` held its own lock and
+  called `_coordinator.GetGroupState()`, taking the coordinator lock (order: offsetStore → coordinator). A planned
+  handover path would have introduced the reverse order → deadlock. Fixed by having the coordinator expose its
+  generation via a **lock-free read** (`Volatile.Read`), so the offset store checks the fence inside its own lock
+  without acquiring a second lock — the fence stays atomic with the offset write, no cross-component nesting.
+- **Interleaving-dependent assertions (Checkpoint D).** The Coyote tests initially either over-asserted one
+  interleaving (a fixed `finalGen > oldGen` that fails on the cancel-first schedule) or asserted too little (final
+  state ignored). Fixed to **outcome-branched assertions**: observe which interleaving occurred, then assert the
+  exact invariant for that branch — the twin discipline to avoiding fake-green (see 11's "interleaving-dependent
+  assertion" hazard).
+
+**Lesson.** Each of these was caught because a checkpoint review (Layer 2) or Coyote (Layer 5) forced the
+interleaving a normal test would reach only by luck. The pattern across all three: the bug lived in a specific
+schedule, and the fix was to model that schedule precisely — never to weaken the test until it passed.
