@@ -134,7 +134,7 @@ internal class GroupCoordinator : IGroupCoordinator
             }
             catch (OperationCanceledException)
             {
-                throw new InvalidOperationException("Rebalance in progress");
+                throw new InvalidOperationException(GroupMessages.RebalanceInProgress);
             }
         }
 
@@ -161,8 +161,8 @@ internal class GroupCoordinator : IGroupCoordinator
         Task syncTask;
         lock (_lock)
         {
-            if (!_groups.TryGetValue(groupId, out var group)) throw new InvalidOperationException("Group not found");
-            if (group.Generation != generation) throw new InvalidOperationException("Fenced");
+            if (!_groups.TryGetValue(groupId, out var group)) throw new InvalidOperationException(GroupMessages.GroupNotFound);
+            if (group.Generation != generation) throw new InvalidOperationException(GroupMessages.Fenced);
             
             if (group.LeaderId == memberId && group.State == GroupState.CompletingRebalance)
             {
@@ -186,14 +186,14 @@ internal class GroupCoordinator : IGroupCoordinator
         }
         catch (OperationCanceledException)
         {
-            throw new InvalidOperationException("Rebalance in progress");
+            throw new InvalidOperationException(GroupMessages.RebalanceInProgress);
         }
 
         lock (_lock)
         {
-            if (!_groups.TryGetValue(groupId, out var group)) throw new InvalidOperationException("Group not found");
-            if (!group.Members.TryGetValue(memberId, out var member)) throw new InvalidOperationException("Member not found");
-            if (group.Generation != generation) throw new InvalidOperationException("Fenced");
+            if (!_groups.TryGetValue(groupId, out var group)) throw new InvalidOperationException(GroupMessages.GroupNotFound);
+            if (!group.Members.TryGetValue(memberId, out var member)) throw new InvalidOperationException(GroupMessages.MemberNotFound);
+            if (group.Generation != generation) throw new InvalidOperationException(GroupMessages.Fenced);
 
             return new GroupSyncResult(group.Generation, member.AssignedPartitions);
         }

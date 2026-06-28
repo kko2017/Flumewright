@@ -25,7 +25,7 @@ internal sealed class InMemoryCommittedOffsetStore : ICommittedOffsetStore
     {
         if (offset < 0)
         {
-            return new ValueTask<(bool, string, Flumewright.Protocol.GroupErrorCode)>((false, "Offset cannot be negative", Flumewright.Protocol.GroupErrorCode.GroupOk));
+            return new ValueTask<(bool, string, Flumewright.Protocol.GroupErrorCode)>((false, GroupMessages.OffsetCannotBeNegative, Flumewright.Protocol.GroupErrorCode.GroupOk));
         }
 
         var key = (groupId, topic, partition);
@@ -37,7 +37,7 @@ internal sealed class InMemoryCommittedOffsetStore : ICommittedOffsetStore
                 var currentGen = _coordinator.GetGroupGeneration(groupId);
                 if (currentGen != null && currentGen.Value != generation)
                 {
-                    return new ValueTask<(bool, string, Flumewright.Protocol.GroupErrorCode)>((false, "Fenced: stale generation", Flumewright.Protocol.GroupErrorCode.GroupFenced));
+                    return new ValueTask<(bool, string, Flumewright.Protocol.GroupErrorCode)>((false, GroupMessages.FencedStaleGeneration, Flumewright.Protocol.GroupErrorCode.GroupFenced));
                 }
             }
             // Reading the watermark MUST be inside the lock. If read before the lock, a message 
@@ -51,7 +51,7 @@ internal sealed class InMemoryCommittedOffsetStore : ICommittedOffsetStore
                 // read, so reject. The (b) variant — allowing commit(0) on a pre-created empty topic — is
                 // deferred; switching to it would require a new DEC and an API to pre-create empty topics.
                 // See DEC-023.
-                return new ValueTask<(bool, string, Flumewright.Protocol.GroupErrorCode)>((false, "Unknown topic or invalid partition", Flumewright.Protocol.GroupErrorCode.GroupOk));
+                return new ValueTask<(bool, string, Flumewright.Protocol.GroupErrorCode)>((false, GroupMessages.UnknownTopicOrInvalidPartition, Flumewright.Protocol.GroupErrorCode.GroupOk));
             }
             long highWatermark = highWatermarkOpt.Value;
             
@@ -60,12 +60,12 @@ internal sealed class InMemoryCommittedOffsetStore : ICommittedOffsetStore
             // ("all current records processed").
             if (offset > highWatermark)
             {
-                return new ValueTask<(bool, string, Flumewright.Protocol.GroupErrorCode)>((false, "Offset out of range", Flumewright.Protocol.GroupErrorCode.GroupOk));
+                return new ValueTask<(bool, string, Flumewright.Protocol.GroupErrorCode)>((false, GroupMessages.OffsetOutOfRange, Flumewright.Protocol.GroupErrorCode.GroupOk));
             }
 
             if (_offsets.TryGetValue(key, out var current) && offset < current)
             {
-                return new ValueTask<(bool, string, Flumewright.Protocol.GroupErrorCode)>((false, "Backwards commit rejected", Flumewright.Protocol.GroupErrorCode.GroupOk));
+                return new ValueTask<(bool, string, Flumewright.Protocol.GroupErrorCode)>((false, GroupMessages.BackwardsCommitRejected, Flumewright.Protocol.GroupErrorCode.GroupOk));
             }
 
             _offsets[key] = offset;
