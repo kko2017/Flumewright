@@ -61,6 +61,7 @@ in the referenced DEC/FIX entry or design note; this table is the index.
 - [DEC-023 — Offset commit semantics: committed = next offset to read (Kafka-style) 🔒](#dec-023--offset-commit-semantics-committed--next-offset-to-read-kafka-style-)
 - [DEC-024 — Typed group control-flow status (`GroupErrorCode`) over the wire, never string matching 🔒](#dec-024--typed-group-control-flow-status-grouperrorcode-over-the-wire-never-string-matching-)
 - [DEC-025 — Coyote is a dedicated assembly; its coverage is a documented roadmap, not a label 🔒](#dec-025--coyote-is-a-dedicated-assembly-its-coverage-is-a-documented-roadmap-not-a-label-)
+- [DEC-026 — M3c zoom-out: record-only dispositions (intended, not defects) 🔒](#dec-026--m3c-zoom-out-record-only-dispositions-intended-not-defects-)
 
 ### Fixes (FIX)
 - [FIX-001 — Fan-out broken: a shared per-topic channel delivered to only one subscriber](#fix-001--fan-out-broken-a-shared-per-topic-channel-delivered-to-only-one-subscriber)
@@ -80,6 +81,7 @@ in the referenced DEC/FIX entry or design note; this table is the index.
 - [FIX-015 — Unawaited tasks in the dual-subscription helper and in the redelivery tests (swallowed-exception / fake-green risk) 🔒](#fix-015--unawaited-tasks-in-the-dual-subscription-helper-and-in-the-redelivery-tests-swallowed-exception--fake-green-risk-)
 - [FIX-016 — The Coyote layer was never actually running; Checkpoint D's "0 bugs / 100 iterations" was a false-positive 🔒](#fix-016--the-coyote-layer-was-never-actually-running-checkpoint-ds-0-bugs--100-iterations-was-a-false-positive-)
 - [FIX-017 — Other M3c checkpoint fixes (orphan window, cross-component lock, interleaving-dependent assertions) 🔒](#fix-017--other-m3c-checkpoint-fixes-orphan-window-cross-component-lock-interleaving-dependent-assertions-)
+- [FIX-018 — Empty `catch (Exception)` around test setup swallowed faults (fake-green); caught at the M3c zoom-out 🔒](#fix-018--empty-catch-exception-around-test-setup-swallowed-faults-fake-green-caught-at-the-m3c-zoom-out-)
 
 ---
 
@@ -1211,3 +1213,25 @@ Concurrency Strategy doc (11) and the m3c design note.
 **Lesson.** Each of these was caught because a checkpoint review (Layer 2) or Coyote (Layer 5) forced the
 interleaving a normal test would reach only by luck. The pattern across all three: the bug lived in a specific
 schedule, and the fix was to model that schedule precisely — never to weaken the test until it passed.
+
+## FIX-018 — Empty `catch (Exception)` around test setup swallowed faults (fake-green); caught at the M3c zoom-out 🔒
+
+**Where:** `FlumewrightGroupConsumerTests` mutual-exclusion tests (`CombineStaticAndDynamic_…` / `CombineDynamicAndStatic_ThrowsInvalidOperationException`), `Flumewright.UnitTests`. Caught by the isolated `code-review` pass during the M3c end-of-milestone zoom-out.
+
+**Symptom.** Each test wrapped its *setup* calls (`AssignAsync` / the first `MoveNextAsync`) in an empty `catch (Exception) { }` with a `CA1031` suppression, to tolerate the fake client throwing during setup. But a broad empty catch around setup means an *unexpected* setup failure is silently dropped and the test proceeds — it could pass while verifying nothing. The exact fake-green shape this project keeps catching (FIX-010, FIX-012).
+
+**Fix (clean removal, not suppression).** Made the setup succeed cleanly instead of catching its failure: `FakeMessageBusClient` gained a `FakeStreamReader` whose `MoveNext` returns false, so the subscription setup completes without throwing. The broad `catch (Exception)` and its `CA1031` suppression were then deleted entirely, and the test asserts the real thing with `Assert.ThrowsAsync<InvalidOperationException>` around only the conflicting call. The mutual-exclusion assertion still holds (the test fails if production ever stops throwing).
+
+**Cleanup in the same commit.** Three *intentional* empty catches were annotated with `// [suppress: <reason>]` per the FIX-015 discipline (an intentional swallow must say why): `Dispose()`'s best-effort `LeaveGroup` (`RpcException`), the heartbeat task's cancellation in `RunSingleGenerationAsync`'s finally, and the integration helper `ConsumeAsync`'s token-cancellation catch.
+
+**Lesson.** Tolerating a fake test-double's setup throw with a broad catch is the wrong fix — fix the double so setup is clean, and the swallow disappears. A `catch (Exception)` around setup is fake-green waiting to happen; an intentional swallow must be both specific and commented.
+
+## DEC-026 — M3c zoom-out: record-only dispositions (intended, not defects) 🔒
+
+The end-of-milestone M3c zoom-out (two passes: a context-aware whole-codebase review + an isolated `code-review` cross-check) produced exactly one correctness fix (FIX-018) and three suppress-reason comments. Everything else was classified **record-only — intended behaviour, deliberately not changed.** Recorded here so these are not re-litigated as defects later (the zoom-out guardrail: an item the log marks as intended is not a bug).
+
+- **Coyote `TestConcurrentJoinAndLeave` orphan assertion is intentionally loose.** It asserts a surviving member has `r.Generation <= finalGen` rather than "present in the current generation's snapshot." This is deliberate, not a gap: (1) the orphan bug itself is prevented *in the code* by the three-state machine (FIX-017), so no orphan can occur; (2) this test's strict guarantees are its ghost/duplicate-free and state-consistency assertions, which are already tight; (3) tightening the orphan assertion under the join/remove race risks over-assertion — a false failure on a valid interleaving (the interleaving-dependent-assertion hazard). There is no clean stricter form that wouldn't trade correctness for flakiness, so the loose-but-explained assertion is the chosen design, not deferred work.
+- **Coyote join/leave test models shutdown via `finally { RemoveMember }` with a 1-hour rebalance timeout.** The in-process Coyote test has no sweeper and no real clock, so members leave via `finally` to model graceful shutdown / the sweeper path. The production *timeout* path is covered by the wall-clock integration tests, not Coyote — in-process timeout exploration is out of scope.
+- **Members wait out the rebalance timeout when others all leave mid-join.** This is the intended Kafka-like eager stop-the-world behaviour for Phase 1 (correctness over availability); the timeout + sweeper resolve it. Not a latency bug.
+- **`CommitRejectedException` carries `ack.Reason` (debug text), not the typed `ack.Code`; and `CommitOffsetAsync` rejection codes are asymmetric** — a fencing rejection returns `GroupErrorCode.GroupFenced`, while the four validation rejections (negative / out-of-range / backwards / unknown-topic) all return `GroupOk`. Intended: the caller's action is identical for all four validation rejects (permanent reject), and only *fenced* needs distinct handling (retry-after-rejoin), which the current `GroupFenced`-vs-rest split already provides. A finer error model is deferred (DEC-024 limited scope on purpose), not required.
+- **Wall-clock liveness integration tests (`Liveness_SlowHandler_NotEvicted`, `Liveness_DeadMember_IsEvicted`) use `await Task.Delay(12000, ct)`** to wait out the broker's real 10-second session timeout. This is an intentional real-time end-to-end verification of the actual KIP-62 timeout; the delay is bounded by a cancellation token (not `Task.Delay`-as-sync, FIX-008). Replacing real time with a fake clock or poll-signal would remove the very thing the test verifies. Recorded so it isn't mistaken for a flaky-timing defect.
