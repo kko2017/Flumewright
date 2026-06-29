@@ -29,7 +29,7 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         var groupId = "cg-" + Guid.NewGuid();
         
         using var publisher = new FlumewrightPublisher(address);
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 
         var strategy = new RangeAssignmentStrategy();
         var partitionCounts = new Dictionary<string, int> { { topic, 4 } };
@@ -53,14 +53,15 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         lock (c1Messages) c1Messages.Clear();
         (await EnsureReceivesFrom(publisher, topic, _partitions01, c1Messages, cts.Token)).Should().Contain(_partitions01);
 
-        await c1.LeaveGroupAsync(cts.Token);
         await c1TaskCts.CancelAsync();
+        await c1Task;
+        await c1.LeaveGroupAsync(cts.Token);
         
         lock (c2Messages) c2Messages.Clear();
         (await EnsureReceivesFrom(publisher, topic, _partitions0123, c2Messages, cts.Token)).Should().Contain(_partitions0123);
 
         await cts.CancelAsync();
-        await Task.WhenAll(c1Task, c2Task);
+        await c2Task;
     }
 
     [Fact]
@@ -202,6 +203,59 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         
         await iter.DisposeAsync();
     }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task Liveness_LeaderVanish_IsEvicted()
+    {
+        // This test belongs in IntegrationTests (not Coyote) because leader-vanish recovery relies on 
+        // real wall-clock time and the background GroupCoordinatorSweeperService. Coyote operates on 
+        // pure state-machine interleavings with no sweeper, so it would falsely report this as an unresolvable hang.
+
+        var address = _factory.Address;
+        var topic = "it.rebalance.leadervanish." + Guid.NewGuid();
+        var groupId = "cg-" + Guid.NewGuid();
+        
+        using var publisher = new FlumewrightPublisher(address);
+        // Budget enough time for the 10s session timeout + rebalance + message reception overhead
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(35));
+
+        var strategy = new RangeAssignmentStrategy();
+        var partitionCounts = new Dictionary<string, int> { { topic, 4 } };
+
+        // 1. Start Leader (c1) WITHOUT a using block so we can abandon it ungracefully
+        var c1 = new FlumewrightGroupConsumer(address, groupId, "member-1");
+        var c1Messages = new List<ReceivedMessage>();
+        var c1TaskCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
+        var c1Task = ConsumeAsync(c1, topic, partitionCounts, strategy, c1Messages, c1TaskCts.Token);
+
+        // Wait for c1 to consume all partitions, establishing it as Leader
+        (await EnsureReceivesFrom(publisher, topic, _partitions0123, c1Messages, cts.Token)).Should().Contain(_partitions0123);
+
+        // 2. Start Survivor (c2)
+        using var c2 = new FlumewrightGroupConsumer(address, groupId, "member-2");
+        var c2Messages = new List<ReceivedMessage>();
+        var c2Task = ConsumeAsync(c2, topic, partitionCounts, strategy, c2Messages, cts.Token);
+
+        // Stable assignment established: c2 should get some partitions
+        (await EnsureReceivesFrom(publisher, topic, _partitions23, c2Messages, cts.Token)).Should().Contain(_partitions23);
+
+        // 3. Leader vanishes ungracefully
+        // Stop its consume loop so heartbeats cease. We DO NOT call LeaveGroupAsync and we DO NOT dispose yet.
+        await c1TaskCts.CancelAsync();
+        await c1Task; // wait for loop to cleanly exit
+
+        // 4. Verify survivor recovers all partitions after the session timeout
+        lock (c2Messages) c2Messages.Clear();
+        // This will block for ~10 seconds while the sweeper evicts c1, then c2 will take over.
+        (await EnsureReceivesFrom(publisher, topic, _partitions0123, c2Messages, cts.Token)).Should().Contain(_partitions0123);
+
+        await cts.CancelAsync();
+        await c2Task;
+        
+        c1.Dispose(); // Cleanup
+    }
+
 
     [Fact]
     [Trait("Category", "Integration")]
