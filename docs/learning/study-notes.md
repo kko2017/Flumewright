@@ -1043,6 +1043,51 @@ bumped; heartbeat won → member kept *and* generation unchanged.) This is the s
 happened." Coyote, by forcing every ordering, is what surfaces an assertion that was secretly tied to just
 one of them.
 
+### The tool boundary: interleaving vs. an external actor over time ⭐ Key concept
+Coyote explores *interleavings* — the order in which concurrent in-process steps are woven. It has **no
+background services and no real clock**. That boundary matters enormously, and we learned it the hard way.
+
+Some properties are not resolved by *ordering* at all; they are resolved by an **external actor acting over
+wall-clock time**. The clearest example in this project: when a consumer vanishes (crashes, disconnects), the
+group does *not* recover by some lucky interleaving — it recovers because a background **sweeper** notices the
+missing heartbeats *after the session timeout elapses*, evicts the dead member, and triggers a rebalance that
+unblocks the survivors. That is a **liveness property** ("eventually, something good happens"), and the thing
+that makes it happen is a service plus the passage of time.
+
+Hand that scenario to Coyote and it will (correctly) report an unresolvable hang — because in Coyote's world
+there is no sweeper and no clock, so the member that vanished never comes back and nothing ever evicts it. The
+report is *not* a bug in the product; it is a **category error in test placement**. We spent a long detour
+chasing exactly this: a "leader vanishes and deadlocks the group" scenario forced into Coyote produced a hang,
+which looked like a discovered defect but was really Coyote being asked a question outside its domain. The
+product was correct all along — the sweeper self-heals the group in a real run.
+
+The rule that falls out: **interleaving races → Coyote (Layer 5); liveness resolved by a sweeper/timeout over
+real time → integration tests (Layer 4), with the real broker and the real clock.** A quick litmus: if your
+description of how the system recovers contains the words "after the session timeout" or "until the sweeper
+…," it is an integration test, not a Coyote test. (Incident: 09 FIX-021; decision DEC-027.)
+
+### A debugging lesson: a symptom is not a diagnosis ⭐ Key concept
+The same episode taught a broader debugging discipline, worth writing down because it is easy to get wrong
+under pressure:
+- **Confirm self-heal before declaring a product bug.** A CI-only end-to-end timeout *looked* like a
+  rebalance defect (a "ghost" member holding partitions, even a leader-deadlock). It was tempting — and three
+  independent reviewers agreed on it, and it even matched real Kafka bug reports (KAFKA-9752 / KAFKA-7610). But
+  the product *self-heals* via the sweeper; the real cause was a test that accidentally modelled an ungraceful
+  disconnect and then paid the intended ~10s timeout penalty five times over a slow CI runner. **Consensus is
+  not proof** — three reviewers agreed on the wrong product conclusion; it was a focused confirmation
+  diagnosis (does the sweeper actually evict it?) that was decisive.
+- **A wrong hypothesis is still cheap if you test it against the code.** One theory was "empty publish keys all
+  route to one partition, so the consumer never receives from all four." Reading the partitioner rejected it
+  in minutes (empty key is explicitly round-robin). Forming and *killing* hypotheses quickly, against the
+  source, is how you converge.
+- **"Local green, CI fail" is a race smell.** It recurred here as it had with Coyote (FIX-016): the slower
+  runner widens a timing window. A test that only passes when it wins a race *is* the defect — fix the test's
+  determinism (or remove a structurally fragile test and rebuild it stage-isolated), don't just raise the
+  timeout.
+- **Keep the agent on local git only.** When an attempted "fix" went down a bad path (modifying correct
+  product code), the damage was contained because it was never pushed — a hard `reset` erased it. Boundaries
+  on an automated agent are what make its mistakes recoverable.
+
 ### Takeaways
 - Interleaving — the woven order of concurrent steps — is where concurrency bugs live; Coyote explores it
   systematically instead of by luck (the point of Layer 5).
@@ -1051,6 +1096,9 @@ one of them.
 - Verify it ran (iteration count), isolate it (dedicated assembly, never production), and write
   outcome-branched assertions so a real interleaving bug is caught without inventing false failures.
   (Incidents: 09 FIX-016; decisions DEC-024/025; strategy doc 11 Layer 5.)
+- Respect the tool boundary: Coyote is for interleavings, not for liveness that a sweeper resolves over real
+  time — that lives in integration tests. And a symptom (a CI timeout) is not a diagnosis: confirm whether the
+  system self-heals before "fixing" correct product code. (Incidents: 09 FIX-021; decision DEC-027.)
 
 ---
 

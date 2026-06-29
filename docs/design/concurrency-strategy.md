@@ -123,7 +123,7 @@ Tooling: **Microsoft Coyote**.
 - Coyote rewrites and controls task scheduling to **deterministically explore interleavings**, reproducing races and deadlocks that ordinary tests hit only by luck. It was reserved for the point where consumer-group assignment and offset-commit concurrency make the schedule space large enough to need it — that point is **M3c (rebalance)**, which adds the group coordinator: membership, the session-timeout sweeper, generation fencing, and handover, all racing in-flight processing.
 - **Active coverage (M3c):** the **group coordinator** (join/leave/sweep/fence interleavings — Step 8) and the **committed-offset store** (commit serialization + the generation-fence-vs-commit race — Step 8.5). Both explore ~100 schedules per test with outcome-branched assertions.
 - **How rewriting works, and its danger.** Coyote *binary-rewrites* an assembly to hook every Task and scheduling primitive, replacing the runtime's scheduler with its own so it can drive the interleavings. That makes the rewritten binary a **modified, test-only artifact** — it must never run in production. And because rewriting affects **every** Task in the assembly, Coyote tests live in a **dedicated assembly** (`Flumewright.ConcurrencyTests`, the only test assembly in `coyote.json`); ordinary xUnit tests stay in a non-rewritten assembly, or Coyote's scheduler would hijack their Tasks. **Coyote only controls Tasks in a rewritten assembly** — if the test assembly itself is not rewritten, the test's own Tasks are invisible, the engine explores 0 iterations, and still reports "0 bugs" (the FIX-016 trap). So a Coyote result is trusted only when `engine.TestReport` shows it **actually explored ~N iterations**, not merely "0 bugs."
-- **Scope.** Coyote controls **in-process** Task scheduling, so it targets components directly, not the gRPC/Kestrel host — the integration tests (over real gRPC) remain a separate layer. **Coverage roadmap:** coordinator + offset store are covered now (M3c); extending Coyote to the **topic store** and any remaining in-process concurrency core is explicit **follow-up work** (post-M3), recorded so this layer's coverage is a documented promise, not a label. (See DEC-025.)
+- **Scope.** Coyote controls **in-process** Task scheduling, so it targets components directly, not the gRPC/Kestrel host — the integration tests (over real gRPC) remain a separate layer. Crucially, Coyote has **no background services and no real clock**, so a property whose resolution depends on an *external actor over wall-clock time* — e.g. the session-timeout **sweeper** evicting a vanished member so the group recovers — is **out of Coyote's scope** and belongs to the integration layer; forcing such a liveness scenario into Coyote yields a hang that is a category error, not a bug (FIX-021, DEC-027). **Coverage roadmap:** coordinator + offset store are covered now (M3c); extending Coyote to the **topic store** and any remaining in-process concurrency core is explicit **follow-up work** (post-M3), recorded so this layer's coverage is a documented promise, not a label. (See DEC-025.)
 - This is the answer to "as the code grows, these bugs get harder to find by reading": a machine explores the schedules a human or an ordinary test never will — but only if it is actually wired to run.
 
 ---
@@ -187,6 +187,27 @@ Concurrency defense is not theoretical here; the layers have already paid off:
   real test-level deadlock — Layer 5 finally doing its job. A defense layer that silently does nothing is worse
   than none, because it reports the same "0 bugs" as a layer that proved correctness.
 
+- **FIX-021 — a CI-only e2e timeout that was a flaky test, not a rebalance defect (and the tool-boundary lesson).**
+  A five-stage composite integration test (`MembershipLifecycle`) timed out on CI but passed locally. It looked
+  like a coordinator bug — a cancelled member lingering as a partition-holding "ghost," even deadlocking the group
+  if it was the leader — and three reviewers (own analysis, the agent's pass, an isolated `code-review` sub-agent)
+  agreed, matching the real Kafka bugs KAFKA-9752 / KAFKA-7610. They were all wrong about the *product*. A
+  confirmation diagnosis of the sweeper showed the coordinator is **correct**: a vanished member — including a
+  ghost leader — is always evicted on the session timeout, and that eviction's `StartRebalance` cancels the
+  survivors' `SyncTcs` to unblock them (self-heal by design). The CI failure was a **test artifact**: the test
+  left ungracefully (heartbeat re-joined in the gap before the consumer task was cancelled), modelling an
+  ungraceful disconnect that intentionally costs one ~10s session-timeout penalty — ×5 stages on a slow runner,
+  over budget. **The decisive tool-boundary lesson:** the fix attempt went off the rails trying to reproduce the
+  *leader-deadlock* in Coyote, which (correctly) reported an unresolvable hang — because Coyote has no sweeper and
+  no clock, and leader-vanish recovery is a liveness property resolved by an external actor (the sweeper) over
+  wall-clock time, **outside Coyote's interleaving-exploration scope**. That belongs in an integration test
+  (Layer 4), never Coyote (Layer 5) — codified as DEC-027. The product was left untouched; the two
+  structurally-fragile composite e2e tests were removed (to be rebuilt stage-isolated in M4), and Coyote's CI
+  step was hardened to be build-decoupled and iteration-guarded (FIX-019 / FIX-020) so its "did it really run?"
+  guarantee is now machine-enforced. The episode is the sharpest illustration of Layer 4 vs Layer 5: a symptom
+  surfaced by an e2e (Layer 4) must not be chased into Coyote (Layer 5) when its resolution depends on time and an
+  external actor.
+
 The lesson that shapes this whole document: **these bugs were caught by different layers, and no single
 layer would have caught them all.** Human reasoning catches semantic/concurrency bugs a person can think
 through (FIX-009, FIX-013); mechanical analysis catches the empty-catch a person skims over (FIX-010); the
@@ -197,6 +218,9 @@ layer up (FIX-015). And a layer must be verified to be *running at all* — FIX-
 from a tool that never executed is the most dangerous green of all. When a review finds a gap in its own
 checklist, that gap becomes a permanent check (FIX-012 → the fake-green checklist item; FIX-015 → `WhenAny`
 survivors and test pumps under the fire-and-forget item; FIX-016 → verify Coyote's explored-iteration count).
+And a layer must be used *within its boundary*: FIX-021 is the reminder that a liveness property resolved by an
+external actor over wall-clock time (the sweeper) belongs to the integration layer, not Coyote — forcing it into
+Coyote's clockless, sweeper-less world produces a hang that is a category error, not a bug (DEC-027).
 Neither layer alone is enough — which is why there are five, and why they feed each other.
 
 ---
