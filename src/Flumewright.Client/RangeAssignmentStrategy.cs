@@ -40,7 +40,7 @@ public class RangeAssignmentStrategy : IAssignmentStrategy
         return assignments;
     }
 
-    private void BuildAssignmentForTopic(string topic, int partitionCount, List<string> consumersForTopic, List<MemberAssignment> assignments)
+    private static void BuildAssignmentForTopic(string topic, int partitionCount, List<string> consumersForTopic, List<MemberAssignment> assignments)
     {
         int numPartitionsPerConsumer = partitionCount / consumersForTopic.Count;
         int consumersWithExtraPartition = partitionCount % consumersForTopic.Count;

@@ -9,6 +9,9 @@ namespace Flumewright.UnitTests.Client;
 
 public class RangeAssignmentStrategyTests
 {
+    private static readonly int[] _expectedC1 = new[] { 0, 1 };
+    private static readonly int[] _expectedC2 = new[] { 2 };
+    private static readonly int[] _expectedC3 = new[] { 3 };
     [Fact]
     public void Assign_DistributesPartitionsEvenly()
     {
@@ -32,13 +35,13 @@ public class RangeAssignmentStrategyTests
         assignments.Should().HaveCount(3);
         
         var c1 = assignments.Single(a => a.MemberId == "C1");
-        c1.Partitions.Should().BeEquivalentTo(new[] { 0, 1 }); // 2 partitions
+        c1.Partitions.Should().BeEquivalentTo(_expectedC1); // 2 partitions
 
         var c2 = assignments.Single(a => a.MemberId == "C2");
-        c2.Partitions.Should().BeEquivalentTo(new[] { 2 }); // 1 partition
+        c2.Partitions.Should().BeEquivalentTo(_expectedC2); // 1 partition
 
         var c3 = assignments.Single(a => a.MemberId == "C3");
-        c3.Partitions.Should().BeEquivalentTo(new[] { 3 }); // 1 partition
+        c3.Partitions.Should().BeEquivalentTo(_expectedC3); // 1 partition
     }
 
     [Fact]
