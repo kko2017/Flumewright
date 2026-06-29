@@ -31,6 +31,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Flumewright.IntegrationTest
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Flumewright.LoadTests", "tests\Flumewright.LoadTests\Flumewright.LoadTests.csproj", "{53657D68-8149-4BA8-8FDC-03024812C032}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Flumewright.ConcurrencyTests", "tests\Flumewright.ConcurrencyTests\Flumewright.ConcurrencyTests.csproj", "{B13CC12A-20A6-48E7-A94C-5E57631CF9FF}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -84,6 +86,10 @@ Global
 		{53657D68-8149-4BA8-8FDC-03024812C032}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{53657D68-8149-4BA8-8FDC-03024812C032}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{53657D68-8149-4BA8-8FDC-03024812C032}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B13CC12A-20A6-48E7-A94C-5E57631CF9FF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B13CC12A-20A6-48E7-A94C-5E57631CF9FF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B13CC12A-20A6-48E7-A94C-5E57631CF9FF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B13CC12A-20A6-48E7-A94C-5E57631CF9FF}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{76B62386-E67D-411C-8B23-BDCFBC2D28F8} = {CF8903F1-854D-4F93-A888-22EE3CC16E13}
@@ -97,5 +103,6 @@ Global
 		{EF5F542A-A98C-480A-AED3-DC1141993026} = {185408F4-FA9C-4ADA-BF9D-3068042399CA}
 		{4B297F0E-75E6-4097-BC48-206CBE53F3F9} = {185408F4-FA9C-4ADA-BF9D-3068042399CA}
 		{53657D68-8149-4BA8-8FDC-03024812C032} = {185408F4-FA9C-4ADA-BF9D-3068042399CA}
+		{B13CC12A-20A6-48E7-A94C-5E57631CF9FF} = {185408F4-FA9C-4ADA-BF9D-3068042399CA}
 	EndGlobalSection
 EndGlobal

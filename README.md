@@ -18,10 +18,10 @@ communication between **Publisher** and **Subscriber** processes over gRPC, foll
 publish-subscribe pattern. It is built on a **Kafka-style log model**: publish appends to a
 per-partition append-only log, and subscribers consume by pulling at their own offset.
 
-> **Status:** Phase 1 in progress. M1 (gRPC contract + broker host + pub→sub) and M2
-> (partitioning + append-only log + offset-based consumption) are complete; M3 is partially complete —
-> consumer groups + offset-commit (M3a) and redelivery/DLQ (M3b) are done, with rebalance/dynamic assignment
-> (M3c) still to come. Transport security (mTLS) and 100K-scale streaming are upcoming milestones —
+> **Status:** Phase 1 in progress. M1 (gRPC contract + broker host + pub→sub), M2
+> (partitioning + append-only log + offset-based consumption), and **all of M3** are complete —
+> consumer groups + offset-commit (M3a), redelivery/DLQ (M3b), and rebalance/dynamic assignment
+> (M3c) are done. Transport security (mTLS) and 100K-scale streaming are upcoming milestones —
 > see [Roadmap](#%EF%B8%8F-roadmap). Features below are marked ✅ done or 🔜 planned accordingly.
 
 ---
@@ -44,7 +44,7 @@ mechanisms, verification discipline, and cost strategy.
 
 ## ✨ Features
 
-**Working today (M1–M3b):**
+**Working today (M1–M3):**
 - ✅ **Process isolation** — the broker runs as an independent process; clients connect over gRPC
 - ✅ **Log-based delivery** — publish appends to a per-partition append-only log; messages are retained
   (for the process lifetime in Phase 1) rather than pushed-and-forgotten
@@ -56,10 +56,12 @@ mechanisms, verification discipline, and cost strategy.
   offset commit so a resumed consumer continues from the committed offset (M3a)
 - ✅ **Redelivery & DLQ** — an optional SDK-side helper retries failed messages via a `{topic}.retry` topic
   and quarantines exhausted/poison messages in `{topic}.dlq`, non-blocking, built on plain topics (M3b)
+- ✅ **Rebalance / dynamic assignment** — partition assignment adjusts as group members join/leave: a broker-side
+  group coordinator does eager rebalancing with generation fencing, liveness via heartbeats, and an SDK-side
+  assignment strategy; control-flow status is a typed code, not string matching (M3c)
 - ✅ **Extensibility** — the broker treats payloads as opaque bytes, so clients may use any `.proto` they like
 
 **Planned (later milestones):**
-- 🔜 **Rebalance / dynamic assignment** — partition assignment that adjusts as group members join/leave (M3c)
 - 🔜 **mTLS security** — mutual certificate verification (M4)
 - 🔜 **100K-scale throughput** — streaming publish + batching + backpressure (M5)
 - 🔜 **Observability** — metrics and structured logging (M6; distributed tracing in Phase 2)
@@ -96,7 +98,7 @@ subscribers read at once, and each partition is served by its own background rea
 lost wakeup, or swallowed exception can silently drop a message or hang a subscriber. Flumewright
 defends concurrency in **depth — five independent layers**: disciplined code patterns, human +
 isolated-AI review, static analysis (Roslyn `CA1031` / SonarCloud / CodeQL), concurrency tests, and
-systematic schedule exploration (Microsoft Coyote, planned). Several real bugs have already been caught by
+systematic schedule exploration (Microsoft Coyote, active since M3c). Several real bugs have already been caught by
 *different* layers — a human reviewer (FIX-009), static analysis (FIX-010), the isolated AI reviewer
 (FIX-011/012/015), and a behavioural integration test (FIX-014) — which is the whole point of not relying on
 any single layer.
@@ -212,7 +214,7 @@ Phase 1 (in-memory, high-throughput, security) → Phase 2 (persistence & ops).
 | M2 | Partitioning + append-only log + offset-based consumption | ✅ done |
 | M3a | Consumer groups + at-least-once via offset commit (static assignment) | ✅ done |
 | M3b | Redelivery & DLQ (non-blocking, SDK-side over plain topics) | ✅ done |
-| M3c | Rebalance / dynamic partition assignment | 🔜 |
+| M3c | Rebalance / dynamic partition assignment | ✅ done |
 | M4 | mTLS (mutual certificates) | 🔜 |
 | M5 | Streaming publish + batching + backpressure (100K) | 🔜 |
 | M6 | Metrics + logging → tag `v0.1.0` | 🔜 |

@@ -1,0 +1,7 @@
+{
+  "$schema": "https://microsoft.github.io/coyote/assets/schemas/coyote.json",
+  "assemblies": [
+    "Flumewright.Broker.Core",
+    "Flumewright.ConcurrencyTests"
+  ]
+}

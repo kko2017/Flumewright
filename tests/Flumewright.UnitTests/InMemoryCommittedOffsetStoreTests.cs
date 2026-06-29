@@ -10,6 +10,7 @@ namespace Flumewright.UnitTests;
 
 public class InMemoryCommittedOffsetStoreTests
 {
+    private static readonly string[] _t1Array = new[] { "t1" };
     [Fact]
     [Trait("Category", "Unit")]
     public async Task GetCommittedOffset_InitialState_ReturnsNull()
@@ -186,5 +187,32 @@ public class InMemoryCommittedOffsetStoreTests
 
         var finalValue = await offsetStore.GetCommittedOffsetAsync("g1", "t1", 0);
         finalValue.Should().Be(999);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task CommitOffset_WithStaleGeneration_Rejected()
+    {
+        var topicStore = new InMemoryTopicStore(1);
+        await topicStore.PublishAsync("t1", ReadOnlyMemory<byte>.Empty, new Dictionary<string, string>(), ReadOnlyMemory<byte>.Empty);
+        
+        var coordinator = new GroupCoordinator();
+        var res = await coordinator.JoinGroupAsync("g1", "m1", _t1Array, TimeSpan.FromMilliseconds(10), CancellationToken.None);
+        int currentGen = res.Generation;
+
+        // Force a generation bump by removing the member
+        coordinator.RemoveMember("g1", "m1");
+        
+        var offsetStore = new InMemoryCommittedOffsetStore(topicStore, coordinator);
+        
+        // This is a zombie commit (using old generation)
+        var result = await offsetStore.CommitOffsetAsync("g1", "t1", 0, 1, currentGen);
+        result.Ok.Should().BeFalse();
+        result.Reason.Should().Be("Fenced: stale generation");
+        
+        // This is a valid commit (using new generation)
+        var newState = coordinator.GetGroupState("g1");
+        var resultValid = await offsetStore.CommitOffsetAsync("g1", "t1", 0, 1, newState!.Generation);
+        resultValid.Ok.Should().BeTrue();
     }
 }

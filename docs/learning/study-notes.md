@@ -956,9 +956,10 @@ Static analysis and SonarCloud do **not** catch concurrency bugs. Those are addr
 checkpoint code review (humans reasoning about interleavings) + concurrency unit tests (e.g. 1000 concurrent
 appends asserting unique/contiguous offsets) + load tests (indirect exposure). **Microsoft Coyote** —
 systematic concurrency testing that deterministically explores schedules to find races/deadlocks — is the
-tool for *direct* detection, reserved for **after M3** (when consumer-group/offset-commit concurrency
-arrives). **Newman/Postman was rejected**: it's a REST/HTTP functional runner, but we're gRPC + protobuf and
-need concurrency analysis, not API-functional assertions — a category mismatch, not just a tooling preference.
+tool for *direct* detection; it was reserved for the rebalance milestone and became **active in M3c**
+(coordinator + offset store). See §11.9 for how it works and the lessons from wiring it up. **Newman/Postman
+was rejected**: it's a REST/HTTP functional runner, but we're gRPC + protobuf and need concurrency analysis,
+not API-functional assertions — a category mismatch, not just a tooling preference.
 
 ### Why this matters for the portfolio
 The repo is public and doubles as a portfolio piece, so the gates are deliberately **visible**: README badges
@@ -966,6 +967,138 @@ The repo is public and doubles as a portfolio piece, so the gates are deliberate
 coverage + quality + security gate set, gated new code so it didn't block legacy, rolled out soft→hard, and
 pinned actions for supply-chain safety" is a compact, senior-sounding CI/CD story. (Decisions: 09 DEC-017 ·
 FIX-010)
+
+---
+
+## 11.9 Systematic concurrency testing with Coyote 🔒
+
+This is the deepest layer of concurrency defense (Layer 5 in the strategy doc), and the one with the most
+subtle setup. It earns its own section because *why* it works — and *how* it can silently fail to work —
+is a genuine learning point, not just a tool to invoke.
+
+### Why interleaving is the heart of concurrency bugs ⭐ Key concept
+We tend to imagine code running one line at a time, but a single statement splits into several machine steps,
+and another thread can slip *between* them. `generation++` is really read → add → write; if two threads
+interleave as read(5) → read(5) → write(6) → write(6), both incremented but the result is 6, not 7 — a lost
+update. **Interleaving** is exactly this: the order in which multiple in-progress threads' steps are woven
+together. A concurrency bug is code that is correct in isolation but breaks under one specific interleaving.
+
+The trouble is that *which* interleaving happens is decided by the runtime, not by you. Normally a `Task.Run`
+is queued to the **ThreadPool**, and the OS/runtime scheduler picks when and on which thread it runs;
+`await` splits the task and re-queues the continuation. So the same code run 100 times takes 100 different
+orders, and a bad order may appear only under rare timing. This is why concurrency bugs are the "works on my
+machine, fails occasionally in production" kind — an ordinary test only *samples* interleavings by luck and
+may never hit the 3-in-a-billion bad one.
+
+### What Coyote does: it takes the scheduler ⭐ Key concept
+Coyote removes that decision from the runtime and gives it to itself. It **binary-rewrites** an assembly,
+replacing `Task.Run` / `await` / `Task.WhenAll` and friends with its own controlled versions, so those Tasks
+run on **Coyote's scheduler** instead of the ThreadPool. Now Coyote decides, one step at a time, which Task's
+next step runs — and it systematically walks the possible orders rather than leaving them to luck. That is how
+it reproduces, deterministically and repeatably, the rare interleavings an ordinary test would almost never
+reach. (Analogy: an uncontrolled intersection where cars merge by chance vs. a traffic officer directing every
+car's order, and trying every possible sequence.)
+
+### The catch: the officer only directs cars that obey ⭐ Key concept
+Coyote can only control Tasks **in a rewritten assembly**. A Task in a non-rewritten assembly is a car that
+ignores the officer — it runs on the real ThreadPool, invisible to Coyote. This is the trap we actually hit
+(FIX-016): `coyote.json` listed only the production assembly, but the *tests'* own `Task.Run`/`Task.WhenAll`
+lived in the test assembly, which was not rewritten. So Coyote controlled none of the test's Tasks; at the
+first `await` it found zero controlled operations, concluded "deadlock," and explored **0 iterations** — yet
+still reported "0 bugs." We had signed off a checkpoint on that false green. The lesson is sharp: **"0 bugs"
+from a systematic tester means nothing unless it actually explored.** Always check `engine.TestReport`'s
+explored-iteration count, not just the bug count. A layer that silently does nothing reports the same result
+as one that proved correctness — which is more dangerous than having no layer, because it gives false
+confidence.
+
+### Why Coyote tests are isolated in their own assembly ⭐ Key concept
+Binary rewriting is powerful and therefore dangerous, and that danger dictates the project structure:
+- The rewritten binary is **modified** — it has Coyote's hooks injected. It is a **test-only artifact and must
+  never run in production.**
+- Rewriting affects **every** Task in the assembly. If ordinary xUnit tests (which want real, luck-based
+  parallelism) shared the assembly, Coyote's scheduler would hijack *their* Tasks too and corrupt them.
+- Coyote can't control everything: it follows **in-process** Tasks only, not the network (gRPC), real timers,
+  or unsupported types. Point it at those and it breaks or explores nothing.
+- Binary rewriting in general carries a risk of incorrect transformation (it manipulates compiled IL without
+  source-level intent).
+
+So Coyote tests live in a **dedicated, Coyote-only assembly** (`Flumewright.ConcurrencyTests`, the only test
+assembly in `coyote.json`); ordinary concurrency tests stay in a non-rewritten assembly; and the rewrite is
+scoped to the production core under test. The isolation is documented in the assembly itself so it can't be
+violated by accident.
+
+### Interleaving-dependent assertions: the twin of fake-green ⭐ Key concept
+When a race has several valid final states, the test assertion must match the *actual* interleaving — not
+guess one. Two opposite mistakes, both wrong:
+- **Over-assert one outcome** (e.g. "the generation always bumped"): fails falsely on a perfectly valid
+  schedule Coyote explores (the one where the other thread was cancelled first). This is the new sibling of
+  fake-green: instead of a test too weak to ever fail, a test too strong, failing on legitimate orderings.
+- **Assert nothing meaningful** (e.g. "it didn't throw"): the fake-green we already knew (§11.65), now able to
+  pass even under the bad interleaving Coyote found.
+
+The correct shape is **outcome-branched assertions**: observe which interleaving actually occurred, branch on
+it, and assert the exact invariant for that branch. (Sweeper won the race → member evicted *and* generation
+bumped; heartbeat won → member kept *and* generation unchanged.) This is the same discipline as §11.65's
+"assert exactly the property the code guarantees," extended to "...for the interleaving that actually
+happened." Coyote, by forcing every ordering, is what surfaces an assertion that was secretly tied to just
+one of them.
+
+### The tool boundary: interleaving vs. an external actor over time ⭐ Key concept
+Coyote explores *interleavings* — the order in which concurrent in-process steps are woven. It has **no
+background services and no real clock**. That boundary matters enormously, and we learned it the hard way.
+
+Some properties are not resolved by *ordering* at all; they are resolved by an **external actor acting over
+wall-clock time**. The clearest example in this project: when a consumer vanishes (crashes, disconnects), the
+group does *not* recover by some lucky interleaving — it recovers because a background **sweeper** notices the
+missing heartbeats *after the session timeout elapses*, evicts the dead member, and triggers a rebalance that
+unblocks the survivors. That is a **liveness property** ("eventually, something good happens"), and the thing
+that makes it happen is a service plus the passage of time.
+
+Hand that scenario to Coyote and it will (correctly) report an unresolvable hang — because in Coyote's world
+there is no sweeper and no clock, so the member that vanished never comes back and nothing ever evicts it. The
+report is *not* a bug in the product; it is a **category error in test placement**. We spent a long detour
+chasing exactly this: a "leader vanishes and deadlocks the group" scenario forced into Coyote produced a hang,
+which looked like a discovered defect but was really Coyote being asked a question outside its domain. The
+product was correct all along — the sweeper self-heals the group in a real run.
+
+The rule that falls out: **interleaving races → Coyote (Layer 5); liveness resolved by a sweeper/timeout over
+real time → integration tests (Layer 4), with the real broker and the real clock.** A quick litmus: if your
+description of how the system recovers contains the words "after the session timeout" or "until the sweeper
+…," it is an integration test, not a Coyote test. (Incident: 09 FIX-021; decision DEC-027.)
+
+### A debugging lesson: a symptom is not a diagnosis ⭐ Key concept
+The same episode taught a broader debugging discipline, worth writing down because it is easy to get wrong
+under pressure:
+- **Confirm self-heal before declaring a product bug.** A CI-only end-to-end timeout *looked* like a
+  rebalance defect (a "ghost" member holding partitions, even a leader-deadlock). It was tempting — and three
+  independent reviewers agreed on it, and it even matched real Kafka bug reports (KAFKA-9752 / KAFKA-7610). But
+  the product *self-heals* via the sweeper; the real cause was a test that accidentally modelled an ungraceful
+  disconnect and then paid the intended ~10s timeout penalty five times over a slow CI runner. **Consensus is
+  not proof** — three reviewers agreed on the wrong product conclusion; it was a focused confirmation
+  diagnosis (does the sweeper actually evict it?) that was decisive.
+- **A wrong hypothesis is still cheap if you test it against the code.** One theory was "empty publish keys all
+  route to one partition, so the consumer never receives from all four." Reading the partitioner rejected it
+  in minutes (empty key is explicitly round-robin). Forming and *killing* hypotheses quickly, against the
+  source, is how you converge.
+- **"Local green, CI fail" is a race smell.** It recurred here as it had with Coyote (FIX-016): the slower
+  runner widens a timing window. A test that only passes when it wins a race *is* the defect — fix the test's
+  determinism (or remove a structurally fragile test and rebuild it stage-isolated), don't just raise the
+  timeout.
+- **Keep the agent on local git only.** When an attempted "fix" went down a bad path (modifying correct
+  product code), the damage was contained because it was never pushed — a hard `reset` erased it. Boundaries
+  on an automated agent are what make its mistakes recoverable.
+
+### Takeaways
+- Interleaving — the woven order of concurrent steps — is where concurrency bugs live; Coyote explores it
+  systematically instead of by luck (the point of Layer 5).
+- Coyote works by rewriting assemblies to seize the scheduler; it controls only Tasks in rewritten
+  assemblies, which is exactly why a mis-scoped rewrite makes it silently explore nothing.
+- Verify it ran (iteration count), isolate it (dedicated assembly, never production), and write
+  outcome-branched assertions so a real interleaving bug is caught without inventing false failures.
+  (Incidents: 09 FIX-016; decisions DEC-024/025; strategy doc 11 Layer 5.)
+- Respect the tool boundary: Coyote is for interleavings, not for liveness that a sweeper resolves over real
+  time — that lives in integration tests. And a symptom (a CI timeout) is not a diagnosis: confirm whether the
+  system self-heals before "fixing" correct product code. (Incidents: 09 FIX-021; decision DEC-027.)
 
 ---
 

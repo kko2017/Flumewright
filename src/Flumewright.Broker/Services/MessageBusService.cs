@@ -5,15 +5,17 @@ using Google.Protobuf;
 
 namespace Flumewright.Broker.Services;
 
-public class MessageBusService : MessageBus.MessageBusBase
+internal class MessageBusService : MessageBus.MessageBusBase
 {
     private readonly ITopicStore _topicStore;
     private readonly ICommittedOffsetStore _offsetStore;
+    private readonly IGroupCoordinator _groupCoordinator;
 
-    public MessageBusService(ITopicStore topicStore, ICommittedOffsetStore offsetStore)
+    public MessageBusService(ITopicStore topicStore, ICommittedOffsetStore offsetStore, IGroupCoordinator groupCoordinator)
     {
         _topicStore = topicStore;
         _offsetStore = offsetStore;
+        _groupCoordinator = groupCoordinator;
     }
 
     public override async Task<PublishAck> Publish(PublishEnvelope request, ServerCallContext context)
@@ -109,13 +111,122 @@ public class MessageBusService : MessageBus.MessageBusBase
 
     public override async Task<CommitAck> CommitOffset(CommitRequest request, ServerCallContext context)
     {
-        var (ok, reason) = await _offsetStore.CommitOffsetAsync(
-            request.GroupId, request.Topic, request.Partition, request.Offset, context.CancellationToken);
+        var (ok, reason, code) = await _offsetStore.CommitOffsetAsync(
+            request.GroupId, 
+            request.Topic, 
+            request.Partition, 
+            request.Offset,
+            request.Generation,
+            context.CancellationToken);
 
         return new CommitAck
         {
             Ok = ok,
-            Reason = reason ?? string.Empty
+            Reason = reason ?? string.Empty,
+            Code = code
         };
+    }
+
+    public override Task<HeartbeatResponse> Heartbeat(HeartbeatRequest request, ServerCallContext context)
+    {
+        var code = _groupCoordinator.RecordHeartbeat(
+            request.GroupId, 
+            request.MemberId, 
+            request.Generation);
+
+        return Task.FromResult(new HeartbeatResponse
+        {
+            Ok = code == Protocol.GroupErrorCode.GroupOk,
+            Reason = code == Protocol.GroupErrorCode.GroupOk ? string.Empty : code.ToString(),
+            RebalanceInProgress = code == Protocol.GroupErrorCode.GroupRebalanceInProgress,
+            Code = code
+        });
+    }
+
+    public override async Task<JoinGroupResponse> JoinGroup(JoinGroupRequest request, ServerCallContext context)
+    {
+        try
+        {
+            var result = await _groupCoordinator.JoinGroupAsync(
+                request.GroupId, 
+                request.MemberId, 
+                request.Topics, 
+                TimeSpan.FromSeconds(10), // phase-1 hardcoded timeout
+                context.CancellationToken);
+
+            var response = new JoinGroupResponse
+            {
+                Ok = true,
+                Generation = result.Generation,
+                MemberId = request.MemberId,
+                IsLeader = result.IsLeader
+            };
+
+            foreach (var m in result.Members)
+            {
+                var meta = new MemberMetadata { MemberId = m.MemberId };
+                meta.Topics.AddRange(m.Topics);
+                response.Members.Add(meta);
+            }
+
+            return response;
+        }
+        catch (InvalidOperationException ex)
+        {
+            return new JoinGroupResponse { Ok = false, Reason = ex.Message, Code = Protocol.GroupErrorCode.GroupUnknownMember };
+        }
+        catch (OperationCanceledException)
+        {
+            return new JoinGroupResponse { Ok = false, Reason = "Rebalance in progress", Code = Protocol.GroupErrorCode.GroupRebalanceInProgress };
+        }
+    }
+
+    public override async Task<SyncGroupResponse> SyncGroup(SyncGroupRequest request, ServerCallContext context)
+    {
+        try
+        {
+            var dict = new Dictionary<string, IReadOnlyList<Core.TopicPartition>>();
+            foreach (var a in request.Assignments)
+            {
+                dict[a.MemberId] = a.Partitions.Select(p => new Core.TopicPartition(a.Topic, p)).ToList();
+            }
+
+            var result = await _groupCoordinator.SyncGroupAsync(
+                request.GroupId, 
+                request.MemberId, 
+                request.Generation, 
+                dict, 
+                context.CancellationToken);
+
+            var response = new SyncGroupResponse
+            {
+                Ok = true,
+                Generation = result.Generation
+            };
+
+            // Convert back to proto
+            var groupedByTopic = result.AssignedPartitions.GroupBy(p => p.Topic);
+            foreach (var g in groupedByTopic)
+            {
+                var ma = new MemberAssignment { MemberId = request.MemberId, Topic = g.Key };
+                ma.Partitions.AddRange(g.Select(p => p.Partition));
+                response.Assignments.Add(ma);
+            }
+
+            return response;
+        }
+        catch (InvalidOperationException ex)
+        {
+            return new SyncGroupResponse { Ok = false, Reason = ex.Message, Code = Protocol.GroupErrorCode.GroupUnknownMember };
+        }
+        catch (OperationCanceledException)
+        {
+            return new SyncGroupResponse { Ok = false, Reason = "Rebalance in progress", Code = Protocol.GroupErrorCode.GroupRebalanceInProgress };
+        }
+    }
+    public override Task<LeaveGroupResponse> LeaveGroup(LeaveGroupRequest request, ServerCallContext context)
+    {
+        _groupCoordinator.RemoveMember(request.GroupId, request.MemberId);
+        return Task.FromResult(new LeaveGroupResponse { Ok = true });
     }
 }

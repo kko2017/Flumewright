@@ -30,6 +30,7 @@
     <ProjectReference Include="..\..\src\Flumewright.Broker.Core\Flumewright.Broker.Core.csproj" />
     <ProjectReference Include="..\..\src\Flumewright.Broker\Flumewright.Broker.csproj" />
     <ProjectReference Include="..\..\src\Flumewright.Protocol\Flumewright.Protocol.csproj" />
+    <ProjectReference Include="..\..\src\Flumewright.Client\Flumewright.Client.csproj" />
   </ItemGroup>
 
 </Project>
