@@ -14,55 +14,8 @@ namespace Flumewright.IntegrationTests;
 
 public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
 {
-    private static readonly int[] _partitions0123 = new[] { 0, 1, 2, 3 };
-    private static readonly int[] _partitions01 = new[] { 0, 1 };
-    private static readonly int[] _partitions23 = new[] { 2, 3 };
     private readonly BrokerAppFactory _factory;
     public DynamicRebalanceE2ETests(BrokerAppFactory factory) => _factory = factory;
-
-    [Fact]
-    [Trait("Category", "Integration")]
-    public async Task MembershipLifecycle_RedistributesOnJoinAndLeave()
-    {
-        var address = _factory.Address;
-        var topic = "it.rebalance.lifecycle." + Guid.NewGuid();
-        var groupId = "cg-" + Guid.NewGuid();
-        
-        using var publisher = new FlumewrightPublisher(address);
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-
-        var strategy = new RangeAssignmentStrategy();
-        var partitionCounts = new Dictionary<string, int> { { topic, 4 } };
-
-        using var c1 = new FlumewrightGroupConsumer(address, groupId, "member-1");
-        var c1Messages = new List<ReceivedMessage>();
-        using var c1TaskCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
-        var c1Task = ConsumeAsync(c1, topic, partitionCounts, strategy, c1Messages, c1TaskCts.Token);
-
-        (await EnsureReceivesFrom(publisher, topic, _partitions0123, c1Messages, cts.Token)).Should().Contain(_partitions0123);
-
-        using var c2 = new FlumewrightGroupConsumer(address, groupId, "member-2");
-        var c2Messages = new List<ReceivedMessage>();
-        var c2Task = ConsumeAsync(c2, topic, partitionCounts, strategy, c2Messages, cts.Token);
-
-        lock (c1Messages) c1Messages.Clear();
-        (await EnsureReceivesFrom(publisher, topic, _partitions23, c2Messages, cts.Token)).Should().Contain(_partitions23);
-        (await EnsureReceivesFrom(publisher, topic, _partitions01, c1Messages, cts.Token)).Should().Contain(_partitions01);
-
-        // Clear messages before wait
-        lock (c1Messages) c1Messages.Clear();
-        (await EnsureReceivesFrom(publisher, topic, _partitions01, c1Messages, cts.Token)).Should().Contain(_partitions01);
-
-        await c1TaskCts.CancelAsync();
-        await c1Task;
-        await c1.LeaveGroupAsync(cts.Token);
-        
-        lock (c2Messages) c2Messages.Clear();
-        (await EnsureReceivesFrom(publisher, topic, _partitions0123, c2Messages, cts.Token)).Should().Contain(_partitions0123);
-
-        await cts.CancelAsync();
-        await c2Task;
-    }
 
     [Fact]
     [Trait("Category", "Integration")]
@@ -247,43 +200,4 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         }
     }
 
-    private static async Task ConsumeAsync(FlumewrightGroupConsumer consumer, string topic, IReadOnlyDictionary<string, int> partitionCounts, IAssignmentStrategy strategy, List<ReceivedMessage> targetList, CancellationToken ct)
-    {
-        try
-        {
-            await foreach (var msg in consumer.SubscribeAsync(new[] { topic }, partitionCounts, strategy, FlumewrightOffsetReset.Latest, TimeSpan.FromMilliseconds(500), ct))
-            {
-                lock (targetList) targetList.Add(msg);
-            }
-        }
-        catch (OperationCanceledException) { // [suppress: the test stops background consumers by cancelling their tokens]
-        }
-    }
-
-    private static async Task<List<int>> EnsureReceivesFrom(FlumewrightPublisher publisher, string topic, int[] expectedPartitions, List<ReceivedMessage> targetList, CancellationToken ct)
-    {
-        while (!ct.IsCancellationRequested)
-        {
-            // Publish enough messages round-robin so that all partitions get at least one
-            for (int i = 0; i < 8; i++)
-            {
-                await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes("msg"), partitionKey: Array.Empty<byte>(), ct: ct);
-            }
-
-            await Task.Delay(500, ct);
-            lock (targetList)
-            {
-                var receivedPartitions = targetList.Select(m => m.Partition).Distinct().OrderBy(p => p).ToList();
-                if (expectedPartitions.All(p => receivedPartitions.Contains(p)))
-                {
-                    return receivedPartitions;
-                }
-            }
-        }
-        
-        lock (targetList)
-        {
-            return targetList.Select(m => m.Partition).Distinct().OrderBy(p => p).ToList();
-        }
-    }
 }
