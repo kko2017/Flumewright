@@ -8,8 +8,12 @@ charset = utf-8
 trim_trailing_whitespace = true
 insert_final_newline = true
 
-# Exception-swallowing prevention (FIX-010 class)
-dotnet_diagnostic.CA1031.severity = error
+# Tier 1 — mechanical, always behaviour-preserving → local hard gate (build error).
+# These are .NET built-in analyzers; cleaning them at write time keeps them out of SonarCloud as noise.
+dotnet_diagnostic.CA1822.severity = error   # member does not access instance state → make it static
+dotnet_diagnostic.CA1861.severity = error   # hoist constant array argument to a static readonly field
 
-# VSTHRD naming convention rule
-dotnet_diagnostic.VSTHRD200.severity = none
+# Test methods use descriptive names, not an Async suffix — VSTHRD200 does not apply to tests.
+# (VSTHRD200 is a naming-style rule, not a concurrency-safety rule; the real threading analyzers VSTHRD003/103/110 etc. remain fully active everywhere.)
+[tests/**/*.cs]
+dotnet_diagnostic.VSTHRD200.severity = none   # [intentional] descriptive test method names
