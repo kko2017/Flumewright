@@ -33,6 +33,11 @@ task needs the specifics. Do not restate or duplicate those docs here.
 - Build/test **inside the dev container** only (host builds pollute `obj/` with foreign UIDs).
 - Do not use `--dangerously-skip-permissions`. Permission review stays on.
 
+## Coding Conventions
+- **Write mechanical-clean by default**: make members `static` when they use no instance state; hoist constant arrays — so the Tier 1 gates (CA1822/CA1861) rarely fire and these never reach SonarCloud as noise.
+- **Exception handling (FIX-010/012/018)**: never a bare fault-swallowing `catch`; any intentional broad/empty catch carries `// [suppress: <reason>]`; general catches are reviewed (by SonarCloud + human), not auto-fixed locally.
+- **Tiering principle**: only mechanical, always-behaviour-preserving rules are local hard gates; semantic rules (merging ifs, general catches, complexity) are surfaced by SonarCloud and reviewed by a human — never locally build-gated.
+
 ## Where the detail lives (read when needed)
 - `docs/design/plan.md` — scope, architecture, milestone roadmap.
 - `docs/guides/version-control-and-validation-guide.md` — commit rules, validation gates, §7.5 zoom-out review, §7.6 risk-based checkpoints.
