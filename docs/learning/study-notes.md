@@ -1088,6 +1088,13 @@ under pressure:
   product code), the damage was contained because it was never pushed — a hard `reset` erased it. Boundaries
   on an automated agent are what make its mistakes recoverable.
 
+### Shift-left: which findings to gate locally, and the analyzer-source trap ⭐ Key concept
+A practical lesson from setting up local analyzer gating (DEC-029). Two ideas worth keeping:
+
+**Know which analyzer a diagnostic comes from — the prefix tells you.** `CS####` is the **C# compiler** itself; `CA####` is **.NET Code Analysis** (built into the SDK, on via `EnableNETAnalyzers`); `IDE####` is **Roslyn code-style** (built-in, but only runs on build with `EnforceCodeStyleInBuild`); `S####` is **SonarQube/SonarCloud** (the `SonarAnalyzer.CSharp` package, and the CI SonarCloud scan); `VSTHRD###` is the **threading analyzer** package. This matters because they're controlled by different switches and have different homes. The trap we hit: with `TreatWarningsAsErrors=true` already on, *adding* the SonarAnalyzer package promoted hundreds of Sonar warnings to build errors at once — and `CodeAnalysisTreatWarningsAsErrors=false` only exempts the `CA` (Microsoft) rules, not third-party `S` rules. The escape wasn't a cleverer suppression mechanism; it was realizing the package didn't need to be local at all (the .NET built-in `CA` rules already cover the mechanical cleanups; the semantic Sonar rules were always CI's job).
+
+**Gate only what's mechanical; a build gate on a judgment rule breeds evasion.** The same fake-green dynamic from the exception lessons reappears at the *config* level: when a rule that needs judgment (a general catch, a mergeable nested-if, a complexity threshold) is a build **error**, the pressure to go green pushes toward disabling the rule, narrowing a catch until the exception escapes, or merging ifs that were deliberately separate. We saw this concretely — an attempt set ~17 Sonar rules to `none` to pass the build, silencing empty-block and assertion-less-test rules (the very fake-green signals we care about). So only rules whose fix can *never* change behaviour are local hard gates; everything with meaning is surfaced (SonarCloud) and reviewed by a human. And a naming-style rule (VSTHRD200: "end async methods in Async") is not a safety rule — suppressing it for test projects, with a comment, is a normal scoped decision, not the evasion the "don't disable rules" guidance is about. The distinction is always *what* and *why*, never the mechanism alone.
+
 ### Takeaways
 - Interleaving — the woven order of concurrent steps — is where concurrency bugs live; Coyote explores it
   systematically instead of by luck (the point of Layer 5).
@@ -1099,6 +1106,9 @@ under pressure:
 - Respect the tool boundary: Coyote is for interleavings, not for liveness that a sweeper resolves over real
   time — that lives in integration tests. And a symptom (a CI timeout) is not a diagnosis: confirm whether the
   system self-heals before "fixing" correct product code. (Incidents: 09 FIX-021; decision DEC-027.)
+- When gating analyzers locally, gate only mechanical rules (a fix that can never change behaviour); a build
+  gate on a judgment rule breeds evasion, and know which analyzer a prefix denotes (CS/CA/IDE/S/VSTHRD) since
+  each has a different switch and home. (Decision: 09 DEC-029.)
 
 ---
 
