@@ -14,6 +14,10 @@ namespace Flumewright.IntegrationTests;
 
 public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
 {
+    private static readonly int[] AllPartitions = new[] { 0, 1, 2, 3 };
+    private static readonly int[] M1Partitions = new[] { 0, 1 };
+    private static readonly int[] M2Partitions = new[] { 2, 3 };
+
     private readonly BrokerAppFactory _factory;
     public DynamicRebalanceE2ETests(BrokerAppFactory factory) => _factory = factory;
 
@@ -199,5 +203,119 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
             await iter.DisposeAsync();
         }
     }
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task MembershipLifecycle_RedistributesOnJoinAndLeave()
+    {
+        var address = _factory.Address;
+        var topic = "it.rebalance.split." + Guid.NewGuid();
+        var groupId = "cg-" + Guid.NewGuid();
+        
+        using var channel = GrpcChannel.ForAddress(address);
+        var client = new MessageBus.MessageBusClient(channel);
+        using var publisher = new FlumewrightPublisher(address);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
 
+        var partitionCountsPublished = new int[4];
+        var targetPartitions = new HashSet<int> { 0, 1, 2, 3 };
+        int keyIndex = 0;
+        
+        while (targetPartitions.Count > 0)
+        {
+            var ack = await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes($"init-{keyIndex}"), partitionKey: BitConverter.GetBytes(keyIndex), ct: cts.Token);
+            targetPartitions.Remove(ack.Partition);
+            partitionCountsPublished[ack.Partition]++;
+            keyIndex++;
+        }
+
+        var join1 = await client.JoinGroupAsync(new JoinGroupRequest { GroupId = groupId, MemberId = "m1", Topics = { topic } }, cancellationToken: cts.Token);
+        join1.Ok.Should().BeTrue(join1.Reason);
+        var sync1 = await client.SyncGroupAsync(new SyncGroupRequest 
+        { 
+            GroupId = groupId, MemberId = "m1", Generation = join1.Generation, 
+            Assignments = { new MemberAssignment { MemberId = "m1", Topic = topic, Partitions = { 0, 1, 2, 3 } } }
+        }, cancellationToken: cts.Token);
+        sync1.Ok.Should().BeTrue();
+
+        using var sub1Call = client.Subscribe(new SubscribeRequest { Topic = topic, GroupId = groupId, Partitions = { 0, 1, 2, 3 }, Reset = OffsetReset.Earliest }, cancellationToken: cts.Token);
+        var m1Partitions = new HashSet<int>();
+        int m1InitialExpected = partitionCountsPublished.Sum();
+        for (int i = 0; i < m1InitialExpected; i++)
+        {
+            var moved = await sub1Call.ResponseStream.MoveNext(cts.Token);
+            moved.Should().BeTrue();
+            m1Partitions.Add(sub1Call.ResponseStream.Current.Partition);
+        }
+        m1Partitions.Should().BeEquivalentTo(AllPartitions);
+
+        var join2Task = client.JoinGroupAsync(new JoinGroupRequest { GroupId = groupId, MemberId = "m2", Topics = { topic } }, cancellationToken: cts.Token).ResponseAsync;
+        
+        while (true)
+        {
+            var hb = await client.HeartbeatAsync(new HeartbeatRequest { GroupId = groupId, MemberId = "m1", Generation = sync1.Generation }, cancellationToken: cts.Token);
+            if (!hb.Ok && (hb.Code == GroupErrorCode.GroupRebalanceInProgress || hb.Code == GroupErrorCode.GroupFenced)) break;
+            await Task.Delay(50, cts.Token);
+        }
+
+        var join1Task = client.JoinGroupAsync(new JoinGroupRequest { GroupId = groupId, MemberId = "m1", Topics = { topic } }, cancellationToken: cts.Token).ResponseAsync;
+        
+        var join1Res = await join1Task;
+        var join2Res = await join2Task;
+        join1Res.Ok.Should().BeTrue(join1Res.Reason);
+        join2Res.Ok.Should().BeTrue(join2Res.Reason);
+        (join1Res.IsLeader ^ join2Res.IsLeader).Should().BeTrue();
+        join1Res.Generation.Should().Be(join2Res.Generation);
+        var leaderJoin = join1Res.IsLeader ? join1Res : join2Res;
+        
+        var assignments = new[]
+        {
+            new MemberAssignment { MemberId = "m1", Topic = topic, Partitions = { 0, 1 } },
+            new MemberAssignment { MemberId = "m2", Topic = topic, Partitions = { 2, 3 } }
+        };
+
+        var sync1Req = new SyncGroupRequest { GroupId = groupId, MemberId = "m1", Generation = leaderJoin.Generation };
+        var sync2Req = new SyncGroupRequest { GroupId = groupId, MemberId = "m2", Generation = leaderJoin.Generation };
+        if (join1Res.IsLeader) sync1Req.Assignments.AddRange(assignments);
+        if (join2Res.IsLeader) sync2Req.Assignments.AddRange(assignments);
+
+        var sync1Task = client.SyncGroupAsync(sync1Req, cancellationToken: cts.Token).ResponseAsync;
+        var sync2Task = client.SyncGroupAsync(sync2Req, cancellationToken: cts.Token).ResponseAsync;
+        
+        var sync1Res = await sync1Task;
+        var sync2Res = await sync2Task;
+        sync1Res.Ok.Should().BeTrue(sync1Res.Reason);
+        sync2Res.Ok.Should().BeTrue(sync2Res.Reason);
+
+        var targetPartitions2 = new HashSet<int> { 0, 1, 2, 3 };
+        while (targetPartitions2.Count > 0)
+        {
+            var ack = await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes($"post-{keyIndex}"), partitionKey: BitConverter.GetBytes(keyIndex), ct: cts.Token);
+            targetPartitions2.Remove(ack.Partition);
+            partitionCountsPublished[ack.Partition]++;
+            keyIndex++;
+        }
+
+        using var sub1Final = client.Subscribe(new SubscribeRequest { Topic = topic, GroupId = groupId, Partitions = { 0, 1 }, Reset = OffsetReset.Earliest }, cancellationToken: cts.Token);
+        using var sub2Final = client.Subscribe(new SubscribeRequest { Topic = topic, GroupId = groupId, Partitions = { 2, 3 }, Reset = OffsetReset.Earliest }, cancellationToken: cts.Token);
+
+        var m1FinalPartitions = new HashSet<int>();
+        int m1Expected = partitionCountsPublished[0] + partitionCountsPublished[1];
+        for (int i = 0; i < m1Expected; i++)
+        {
+            var moved = await sub1Final.ResponseStream.MoveNext(cts.Token);
+            moved.Should().BeTrue();
+            m1FinalPartitions.Add(sub1Final.ResponseStream.Current.Partition);
+        }
+        m1FinalPartitions.Should().BeEquivalentTo(M1Partitions);
+
+        var m2FinalPartitions = new HashSet<int>();
+        int m2Expected = partitionCountsPublished[2] + partitionCountsPublished[3];
+        for (int i = 0; i < m2Expected; i++)
+        {
+            var moved = await sub2Final.ResponseStream.MoveNext(cts.Token);
+            moved.Should().BeTrue();
+            m2FinalPartitions.Add(sub2Final.ResponseStream.Current.Partition);
+        }
+        m2FinalPartitions.Should().BeEquivalentTo(M2Partitions);
+    }
 }
