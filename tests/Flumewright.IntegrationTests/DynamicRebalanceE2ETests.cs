@@ -267,11 +267,9 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         join1Res.Generation.Should().Be(join2Res.Generation);
         var leaderJoin = join1Res.IsLeader ? join1Res : join2Res;
         
-        var assignments = new[]
-        {
-            new MemberAssignment { MemberId = "m1", Topic = topic, Partitions = { 0, 1 } },
-            new MemberAssignment { MemberId = "m2", Topic = topic, Partitions = { 2, 3 } }
-        };
+        var strategy = new RangeAssignmentStrategy();
+        var partitionCounts = new Dictionary<string, int> { { topic, 4 } };
+        var assignments = strategy.Assign(leaderJoin.Members, partitionCounts);
 
         var sync1Req = new SyncGroupRequest { GroupId = groupId, MemberId = "m1", Generation = leaderJoin.Generation };
         var sync2Req = new SyncGroupRequest { GroupId = groupId, MemberId = "m2", Generation = leaderJoin.Generation };
@@ -285,6 +283,11 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         var sync2Res = await sync2Task;
         sync1Res.Ok.Should().BeTrue(sync1Res.Reason);
         sync2Res.Ok.Should().BeTrue(sync2Res.Reason);
+        
+        var m1Assignments = sync1Res.Assignments.Single(a => a.Topic == topic).Partitions;
+        var m2Assignments = sync2Res.Assignments.Single(a => a.Topic == topic).Partitions;
+        m1Assignments.Should().BeEquivalentTo(M1Partitions);
+        m2Assignments.Should().BeEquivalentTo(M2Partitions);
 
         var targetPartitions2 = new HashSet<int> { 0, 1, 2, 3 };
         while (targetPartitions2.Count > 0)
@@ -295,11 +298,11 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
             keyIndex++;
         }
 
-        using var sub1Final = client.Subscribe(new SubscribeRequest { Topic = topic, GroupId = groupId, Partitions = { 0, 1 }, Reset = OffsetReset.Earliest }, cancellationToken: cts.Token);
-        using var sub2Final = client.Subscribe(new SubscribeRequest { Topic = topic, GroupId = groupId, Partitions = { 2, 3 }, Reset = OffsetReset.Earliest }, cancellationToken: cts.Token);
+        using var sub1Final = client.Subscribe(new SubscribeRequest { Topic = topic, GroupId = groupId, Partitions = { m1Assignments }, Reset = OffsetReset.Earliest }, cancellationToken: cts.Token);
+        using var sub2Final = client.Subscribe(new SubscribeRequest { Topic = topic, GroupId = groupId, Partitions = { m2Assignments }, Reset = OffsetReset.Earliest }, cancellationToken: cts.Token);
 
         var m1FinalPartitions = new HashSet<int>();
-        int m1Expected = partitionCountsPublished[0] + partitionCountsPublished[1];
+        int m1Expected = m1Assignments.Sum(p => partitionCountsPublished[p]);
         for (int i = 0; i < m1Expected; i++)
         {
             var moved = await sub1Final.ResponseStream.MoveNext(cts.Token);
@@ -309,7 +312,7 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         m1FinalPartitions.Should().BeEquivalentTo(M1Partitions);
 
         var m2FinalPartitions = new HashSet<int>();
-        int m2Expected = partitionCountsPublished[2] + partitionCountsPublished[3];
+        int m2Expected = m2Assignments.Sum(p => partitionCountsPublished[p]);
         for (int i = 0; i < m2Expected; i++)
         {
             var moved = await sub2Final.ResponseStream.MoveNext(cts.Token);
