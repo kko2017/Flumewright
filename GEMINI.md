@@ -5,8 +5,9 @@ turn. They are a summary + pointers — the authoritative detail lives in the re
 task needs the specifics. Do not restate or duplicate those docs here.
 
 ## Git boundary (non-negotiable)
-- **Local git only**: init/add/commit/branch/checkout/merge/tag/status/log/diff/config.
+- **Local git only**: init/add/commit/branch/checkout/tag/status/log/diff/config.
 - **NEVER** run push / pull / fetch / remote / gh. All remote operations are done by the user.
+- **`merge` is limited**: merging *within* a feat/test branch is fine, but **merging into `main` is forbidden even as a local merge** — integrating a branch into `main` is the user's operation. Stop at "ready to merge" and report.
 - **Stage per file with explicit paths**: `git add <path>`. NEVER `git add .` or `git add -A`.
 - After **every** commit, run `git show --stat HEAD` and show the output — confirm only intended files changed.
 - Never rewrite shared history. `reset`/`amend` only on un-pushed local branches.
@@ -18,6 +19,7 @@ task needs the specifics. Do not restate or duplicate those docs here.
 - Do **one step (or one checkpoint group) at a time**; do not start the next until told.
 - At a **checkpoint**, before your own `checkpoint-review` self-report, run `code-review` (isolated reviewer sub-agent over the diff). Relay its findings **verbatim** + your per-finding opinion; surface every disagreement to the human — never summarize away or silently overrule a reviewer concern.
 - Conventional Commits format (`feat`/`fix`/`test`/`refactor`/`perf`/`docs`/`chore`).
+- **A wrap-up / "finish this" signal does NOT suspend discipline.** Each step still stops at its checkpoint; `zoomout-review` stays report-only until the human approves its fixes; out-of-milestone work (e.g. running suites the milestone did not ask for) is not started on your own initiative. Finishing is not a license to skip verification or widen scope.
 
 ## Scope discipline
 - Build only what the current milestone's instruction asks. Do **not** add features, future-milestone work, or out-of-scope refactors.
