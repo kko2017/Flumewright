@@ -6,6 +6,28 @@
 
 ---
 
+## Table of Contents
+
+0. [Document Map (Single Source of Truth)](#0-document-map-single-source-of-truth)
+1. [One-line Definition](#1-one-line-definition)
+2. [Reference Models](#2-reference-models)
+3. [Core Design Decisions (Confirmed)](#3-core-design-decisions-confirmed)
+4. [Included Features](#4-included-features)
+5. [System Architecture (Phase 1)](#5-system-architecture-phase-1)
+6. [Strategy for 100K Concurrent Inbound](#6-strategy-for-100k-concurrent-inbound)
+7. [Security (mTLS)](#7-security-mtls)
+8. [Protocol Draft (Broker's Fixed Interface)](#8-protocol-draft-brokers-fixed-interface)
+9. [Solution Structure](#9-solution-structure)
+10. [Testing & Validation Strategy](#10-testing--validation-strategy)
+11. [Documentation Policy](#11-documentation-policy)
+12. [Development Process (Version Control & Validation)](#12-development-process-version-control--validation)
+13. [CI/CD Workflows](#13-cicd-workflows)
+14. [Roadmap](#14-roadmap)
+15. [Open Questions](#15-open-questions)
+16. [Change Log](#16-change-log)
+
+---
+
 ## 0. Document Map (Single Source of Truth)
 
 The documents below define the project's source of truth, kept under `docs/`. When this plan references
@@ -255,8 +277,9 @@ Flumewright.sln
 │   ├── SamplePublisher/        # Example publisher with its own .proto
 │   └── SampleSubscriber/       # Example subscriber with its own .proto
 ├── tests/
-│   ├── Flumewright.UnitTests/        # [Category=Unit]
+│   ├── Flumewright.UnitTests/        # [Category=Unit] — also holds Coyote-independent concurrency (start-gate herd) tests
 │   ├── Flumewright.IntegrationTests/ # [Category=Integration] cross-process e2e
+│   ├── Flumewright.ConcurrencyTests/ # Coyote-ONLY assembly (systematic interleaving; binary-rewritten by Coyote, run as its own CI step — see §10.4)
 │   └── Flumewright.LoadTests/        # [Category=Load] performance/stress
 ├── tools/
 │   └── certgen/                # Dev CA/certificate generation scripts
@@ -302,6 +325,22 @@ running different sets at each gate (Section 12.3). For per-gate rules, see `doc
 | Fan-out | Scalability of concurrent push to many subscribers |
 - Tools: BenchmarkDotNet (micro) + custom load generator (macro). Results recorded for regression tracking.
 
+### 10.4 Systematic concurrency (Coyote)
+- **What:** `Flumewright.ConcurrencyTests` uses **Microsoft Coyote** to systematically explore thread
+  interleavings of the concurrent core — the group coordinator (join/sync/heartbeat/sweep races, generation
+  fencing) and the committed-offset store. Coyote takes over scheduling and explores ~100 execution paths per
+  test, deterministically surfacing races a probabilistic test would only hit by luck. This is **Layer 5** of
+  the concurrency defense (see `docs/design/concurrency-strategy.md`; concept notes in study-notes §11.9).
+- **Isolated assembly, special run.** It is a Coyote-only assembly (binary-rewritten by Coyote), so it does
+  **not** run under the ordinary `dotnet test`; it is built, rewritten (`CoyoteRewriteTarget`), then tested
+  `--no-build` as a **dedicated CI step**, guarded so the explored-iteration count (~100) is verified, not
+  just the bug count — a plain run reports 1 iteration and proves nothing (the FIX-016 trap). Ordinary
+  (non-Coyote) concurrency tests live in `Flumewright.UnitTests`, which is not rewritten.
+- **Tool boundary (DEC-027).** Coyote covers **interleaving races** — bugs that depend on the *order* of
+  concurrent steps. It does **not** cover properties resolved by an external actor over wall-clock time (e.g.
+  session-timeout eviction by the sweeper); those are wall-clock liveness and belong to integration tests
+  (§10.2), because Coyote has no clock and no background service and would report a category-error hang.
+
 ---
 
 ## 11. Documentation Policy
@@ -344,8 +383,12 @@ docs/
 | Gate | When | Runs |
 |------|------|------|
 | pre-commit hook (local) | on commit | build + Unit |
-| GitHub Actions CI | push/PR → main | build + Unit + Integration |
+| GitHub Actions CI | push/PR → main | build + Unit + Integration + **Coyote** (rewritten, ~100 iterations verified) + **SonarCloud** (quality gate: coverage on new code, code smells) + **CodeQL** (security) |
 | Load workflow | manual / nightly | Load |
+
+> The gates within CI are independent PR checks (build/test, SonarCloud quality gate, CodeQL) — see
+> study-notes §11.8 for how the three relate and why coverage on *new code* is gated separately.
+> Dependabot raises dependency-update PRs (not a gate; a monitor).
 
 ### 12.4 GitHub Control Boundary ⭐
 - **Only local Git operations are allowed for the CLI**: init/add/commit/branch/checkout/merge/tag/status/log/diff/config.
@@ -359,13 +402,15 @@ docs/
 
 | Workflow | Trigger | Role |
 |----------|---------|------|
-| `ci.yml` | push/PR → main | Build + Unit/Integration tests + **dev artifact upload** |
+| `ci.yml` | push/PR → main | Build + Unit/Integration tests + SonarCloud scan + Coyote step + **dev artifact upload** |
+| `codeql.yml` | push/PR → main + weekly cron | CodeQL security analysis (C#) |
 | `load.yml` | manual / nightly cron | Performance & stress tests |
 | `release.yml` | **push `v*.*.*` tag** | Release build + packaging + publish to Releases tab |
 
 - The actual workflow YAML lives under `.github/workflows/` in the repo.
-- Action versions: `actions/checkout@v6`, `actions/setup-dotnet@v5`, `actions/cache@v4`,
-  `actions/upload-artifact@v4`, `softprops/action-gh-release@v3`.
+- **Action versions are pinned to full commit SHAs, not tags** (supply-chain hardening — a moved tag can't
+  swap the action under you; see study-notes §11.8). E.g. `actions/checkout`, `actions/setup-dotnet`,
+  `actions/cache`, `actions/upload-artifact`, `github/codeql-action/*` are each pinned to a specific commit.
 - **Dev build**: each main CI uploads the broker artifact to Actions Artifacts (download the latest dev build).
 - **Release**: a tag push is the release signal. Artifacts published to the Releases tab. Actual server
   deployment (CD) is deferred until a deployment target is chosen (currently up to "publish to Releases").
@@ -390,7 +435,7 @@ docs/
   three sub-milestones: **M3a** (static assignment + manual batch commit + resume = the at-least-once happy
   path) — *complete, merged*; **M3b** (redelivery + DLQ = the failure path) — *complete, merged*; **M3c**
   (rebalance / dynamic assignment) — *complete, merged*. **This completes M3.**
-- M4: mTLS (mutual certificates), certgen tool. **Follow the Section 7.1 certgen checklist (CA BasicConstraints, server SAN, client EKU, single CA chain).** Sequenced as three independent branches/PRs: **(1) shift-left analyzers** (local Tier-1 mechanical gates, DEC-028/029) — *done*; **(2) rebuild the flaky composite e2e tests** stage-isolated (the FIX-021 gap); **(3) mTLS** itself (mutual auth + identity extraction onto the request context; ACL is a separate later milestone, added as a gRPC interceptor over that identity).
+- M4: mTLS (mutual certificates), certgen tool. **Follow the Section 7.1 certgen checklist (CA BasicConstraints, server SAN, client EKU, single CA chain).** Sequenced as three independent branches/PRs: **(1) shift-left analyzers** (local Tier-1 mechanical gates, DEC-028/029) — *done*; **(2) rebuild the flaky composite e2e tests** stage-isolated (the FIX-021 gap; FIX-022) — *done*; **(3) mTLS** itself (mutual auth + identity extraction onto the request context; ACL is a separate later milestone, added as a gRPC interceptor over that identity) — *next*.
 - M5: Bidi/server streaming + batching + backpressure for 100K throughput.
 - M6: Basic metrics/logging + first pass of unit/integration/load tests.
 - Phase 1 complete → tag `v0.1.0`.
@@ -430,3 +475,4 @@ docs/
 | v0.9 | **M3b complete (redelivery + DLQ); merged.** The failure path is done: a non-blocking, policy-driven SDK helper (`Flumewright.Client.Resilience`) retries failed messages via a `{topic}.retry` topic and quarantines exhausted/poison ones in `{topic}.dlq`, all over plain topics — the broker is untouched. Attempt count + original metadata travel in headers; publish-then-commit is non-atomic by design (at-least-once duplication accepted, idempotency is the consumer's responsibility). Key outcomes in the decision-and-fix log: **FIX-014** (helper committed the processed offset instead of `offset + 1` per DEC-023 → infinite redelivery; a Checkpoint-A-era defect surfaced only by Step-4 integration tests, not by diff review), **FIX-015** (unawaited survivor task in the dual-subscription helper + unawaited test pumps → swallowed-exception / fake-green risk; a `Task.Delay`-as-sync trick removed). Concurrency-strategy doc gained the non-atomic-boundary hazard + the shared-lifetime-task rule; study-notes §9.5 placeholders filled (error classification, extension-point design). Deferred as planned: timed/multi-stage backoff + blocking retry → Phase 2; rebalance → M3c. M3c (rebalance / dynamic assignment) is next. |
 | v1.0 | **M3c complete (rebalance / dynamic assignment); merged — this completes M3.** A broker-side **group coordinator** does eager (stop-the-world) rebalancing with a three-state machine (Stable → PreparingRebalance → CompletingRebalance); liveness via a dedicated Heartbeat RPC + session-timeout sweeper (KIP-62); the broker is the coordinator while a consumer **leader** computes the assignment via an SDK-side `IAssignmentStrategy`; handover safety = stop-the-world + **generation fencing** (stale commits/heartbeats rejected). Control-flow status is a typed proto `GroupErrorCode`, never string matching, with a safe unknown-code boundary in the SDK (**DEC-024**). **Microsoft Coyote (defense Layer 5) became active** — systematic interleaving tests for the coordinator and the committed-offset store. Key outcomes in the decision-and-fix log: **FIX-016** (the Coyote layer was never actually running because the test assembly was not rewritten — Checkpoint D's "0 bugs" was a false-positive until fixed; verify explored-iteration count, not just bug count), **FIX-017** (orphan window from a 2-state machine → 3-state; cross-component lock → lock-free generation read; interleaving-dependent test assertions → outcome-branched), **DEC-024** (typed GroupErrorCode), **DEC-025** (Coyote = dedicated rewritten assembly; coverage roadmap with topic store as follow-up). Concurrency-strategy doc: Layer 5 now active (coordinator + offset store); study-notes §11.9 added (interleaving, how Coyote takes the scheduler, why its tests are isolated). Deferred as planned: cooperative/incremental rebalancing, static membership, sticky strategies, multi-broker coordination → Phase 2. M4 (mTLS) is next. |
 | v1.1 | **M4 started; shift-left analyzers landed (M4 step 1 of 3).** M4 is sequenced as three independent branches: (1) shift-left, (2) rebuild the flaky composite e2e tests stage-isolated (the FIX-021 gap), (3) mTLS itself. Step 1 done: local analyzer gating via the .NET built-in analyzers — Tier 1 (build-error hard gate) is **CA1822** (make-it-static) + **CA1861** (const-array hoist); the SonarAnalyzer package is deliberately NOT referenced locally (it would promote hundreds of rules to errors under warnings-as-errors), Tier-2 semantic rules stay with the CI SonarCloud scan + human review, and VSTHRD safety rules remain build-wide (only the VSTHRD200 naming rule is suppressed for tests). Decisions: **DEC-028** (shift-left rationale), **DEC-029** (the two-tier model, why no local Sonar package, why IDE0005 was rejected, the analyzer-prefix legend). M4 scope confirmed = mTLS mutual auth + identity extraction onto the request context; **ACL split to a separate later milestone** (added as a gRPC interceptor over the mTLS identity — M4 lays that hook). Next: M4 step 2 (rebuild flaky e2e), then step 3 (mTLS). |
+| v1.2 | **M4 step 2 done — flaky composite e2e tests rebuilt (FIX-022); merged.** The two tests FIX-021 removed are rebuilt as four stage-isolated integration tests (one rebalance each, deterministic, real sweeper for the leader-vanish liveness property per DEC-027): dynamic-join partition split, leader-vanish self-heal, `Latest` semantics (single member), and `Latest` × rebalance (per member). Integration suite 17 → 21; each 10× flake-free. Key outcomes in the decision-and-fix log: **DEC-030** (sweeper session-timeout/sweep-interval made a configurable testability seam — production defaults kept, tests inject ~1s/250ms; keeps the wall-clock dependency, shrinks the wait; plus the non-positive-fallback branch had to be unit-tested to satisfy the SonarCloud new-code coverage gate), **DEC-031** (`SyncGroup Ok` establishes membership but NOT the Subscribe stream's `Latest` cursor — pinned only at stream activation; resolved with a per-member marker technique; recurs at mTLS handshake), **DEC-032** (wrap-up-phase discipline erosion: missing GEMINI.md reference in instructions + completion inertia + a git-boundary wording flaw — with GEMINI.md edits proposed). **Doc-structure additions this version:** a Table of Contents; §9 now lists `Flumewright.ConcurrencyTests`; new §10.4 (systematic concurrency / Coyote); §12.3 and §13 now name the Coyote step, the SonarCloud quality gate, CodeQL, and Dependabot; §13 records that GitHub Actions are pinned to commit SHAs. Next: M4 step 3 (mTLS). |

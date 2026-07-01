@@ -501,6 +501,35 @@ varies by user" (belongs above it).
   when delayed backoff is actually built in Phase 2; M3b deliberately ships immediate retry only, so there is
   nothing implemented to record yet.)*
 
+### "Offset reset" is a fallback policy, not a reset button ⭐ Key concept
+*(Clarified during the M4 e2e rebuild — the name misleads, so it is worth pinning down.)* `OffsetReset`
+(`Earliest` / `Latest`) sounds like it re-positions the cursor on demand, but it does **not**. It is only a
+**fallback for the "no starting point yet" case** — it decides where to begin *when there is no committed
+offset for this group+partition* (a brand-new group, or a partition it has never read). The instant a
+committed offset exists, `reset` is **ignored entirely** and reading resumes from committed. So the two are
+not peers: committed offset always wins; `reset` only fills the void when there is nothing committed.
+Concretely: `Earliest` → begin at 0 (from the start); `Latest` → begin at the current log end (only messages
+that arrive *after* this point). This is exactly why a rebalance handing a partition to a new owner does
+**not** lose position if that group had committed there — `reset` doesn't fire, committed does (this is what
+the handover-safety test proves). The general skill: when an API name implies an action ("reset"), check
+whether it is actually an *action* or a *default* — here it is a default that only a missing value triggers.
+
+### Failure is observed only as silence — hence the timeout tax ⭐ Key concept
+*(From the leader-vanish rebuild.)* A distributed system cannot directly observe "this member died"; it can
+only observe "this member has gone quiet." A crash, a network partition, and a merely-slow process all look
+identical from the outside — no heartbeat arriving. The only way to turn silence into a decision is to
+**wait a bounded time and then declare death**: if no heartbeat for longer than the session timeout, treat
+the member as gone and rebalance. This is why a "member vanished → recovered" property *inherently* costs a
+wait (the ~10s session-timeout tax) — it is not slow code, it is the irreducible price of distinguishing
+death from slowness over an unreliable channel. Two consequences worth internalizing: (1) the timeout is a
+**tradeoff dial**, not a bug — shorter means faster failure detection but more false evictions of
+merely-slow members (this is exactly the balance behind the `Liveness_SlowHandler_NotEvicted` vs
+`Liveness_DeadMember_IsEvicted` pair: the slow handler survives because heartbeats keep flowing on a
+background task, independent of the slow foreground work); (2) *heartbeats must be independent of the work* —
+if the heartbeat rode on the same thread as message processing, a slow-but-alive consumer would be
+misjudged dead. Recognizing "my only signal is silence, so I must wait to decide" is the general lesson; it
+recurs anywhere liveness is inferred (health checks, leader election, connection keep-alives).
+
 ---
 
 ## 10. gRPC Transport Patterns
@@ -802,6 +831,62 @@ call returned ⇒ the value is pinned"). Atomicity and observability are not in 
 happens at the synchronous boundary instead of deep inside an async hop. The general principle: **if a test
 needs a `Task.Delay` to be reliable, the real problem is usually that something is resolved later (and less
 observably) than it should be** — move the resolution earlier rather than papering over the timing.
+
+### "Returned OK" is not "the downstream effect is live" 🔒
+A direct sequel to the lesson above, from the M4 e2e rebuild (09 DEC-031). When a call returns success, it
+is tempting to treat that as "everything it sets in motion is now ready". Often it is not. In the group
+protocol, `SyncGroup` returning `Ok=true` establishes **group membership and assignment** — but it does
+**not** establish the `Subscribe` stream's read cursor. A `Latest` ("from now") cursor is pinned only when
+the broker's `Subscribe` RPC actually reads the log end, which happens *after* `SyncGroup` returns. So a
+test that publishes in the gap between "SyncGroup OK" and "stream actually reading" races the cursor — the
+same shape of bug as the FIX-013 async-resolution race, one layer up.
+
+The fix is the same *kind* of move: find the real activation point and **observe it**, don't assume it from
+an earlier acknowledgement. The technique that made it deterministic: publish a **marker** message
+repeatedly until the stream yields its first record, and assert that first record IS the marker. That proves
+two things at once — the stream is now live, and (for `Latest`) everything published before it was correctly
+skipped. In a multi-member rebalance you do this **per member**, because each consumer's cursor is pinned at
+*its own* stream activation, independently. The general principle to carry forward: **an OK response marks
+that a step succeeded, not that its downstream effect is observable yet; when a test depends on that effect,
+find and observe the actual activation moment rather than trusting the ack.** (This will recur at mTLS: "the
+handshake returned" is not "the connection is authenticated and serving" — the ready moment is a specific,
+observable point.)
+
+### Observe the outcome, don't dictate it — the ownership-assertion trap 🔒
+Another rebuild lesson (09 FIX-022), a cousin of fake-green. To check that a rebalance split partitions
+correctly ({0,1,2,3} → {0,1}/{2,3} across two members), an early draft had each member *subscribe to the
+partitions it was supposed to get* and then asserted it received from those partitions. That always passes —
+you asked for {0,1}, so {0,1} comes back — **regardless of whether the split logic was correct**. The test
+dictated the answer it was supposed to be verifying. It is tautological: the assertion cannot fail for the
+reason the test exists.
+
+The correction: **observe what the system decided, don't hand it the decision.** Let the leader compute the
+assignment via the real strategy, then read the assignment back from `SyncGroupResponse.Assignments` and
+compare it to an *independently known* expected value ({0,1}/{2,3} as a separate constant, not derived from
+the strategy's own output). Now a wrong split fails the test. The general principle: **a sound assertion
+compares the system's output against a value the test knows independently; if the "expected" value is
+something the test itself supplied to the system, the check is circular.** A useful litmus, shared with
+fake-green (§11.65): *could this test still pass if the behaviour under test were broken?* If yes, it is
+asserting the wrong thing.
+
+### Testing a real-time property: keep the clock, shrink it 🔒
+From the leader-vanish rebuild (09 DEC-030, FIX-022). Some properties are inherently about wall-clock time:
+"a member that stops sending heartbeats is eventually evicted" is only meaningful *over real time*, resolved
+by an external actor (the sweeper) — it belongs in an integration test, not in Coyote (§11.9, and 09 DEC-027
+for the tool boundary). The original tests honoured that but paid a heavy price: a hardcoded 10s session
+timeout forced a 12s wall-clock wait per test, and several such waits blew the CI budget — a structural
+source of flakiness.
+
+The resolution is not to fake the clock away (that would delete the very property being tested) but to make
+the clock **injectable and short**: the session timeout / sweep interval became configuration, defaulting to
+production values but set to ~1s / 250ms in tests. The real sweeper still runs on real time; the *magnitude*
+of the wait shrinks from ~12s to ~1–2s, removing the CI-budget fragility without removing the real-time
+dependency. The general principle: **to test a real-time property without flakiness, don't remove the
+real-time dependency — shorten the clock.** Expose the timing as a configurable seam (defaulting to
+production values), and let tests dial it down. Two independent axes are at play and should not be confused:
+*removing a reception race* (use `Earliest` / fix ordering) is about determinism of *what* is observed;
+*shrinking the wait* (short injected timeout) is about the *cost* of observing it. The leader-vanish rebuild
+needed both.
 
 ---
 
