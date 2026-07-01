@@ -383,7 +383,12 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         (join1Res.IsLeader ^ join2Res.IsLeader).Should().BeTrue();
         
         var leaderJoin = join1Res.IsLeader ? join1Res : join2Res;
+        var leaderId = join1Res.IsLeader ? "m1" : "m2";
         var followerId = join1Res.IsLeader ? "m2" : "m1";
+        
+        var silencedId = leaderId;
+        var activeId = followerId;
+        silencedId.Should().NotBe(activeId, "we must silence a different member than the one we keep active");
         
         var strategy = new RangeAssignmentStrategy();
         var partitionCounts = new Dictionary<string, int> { { topic, 4 } };
@@ -402,11 +407,11 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         sync1Res.Ok.Should().BeTrue(sync1Res.Reason);
         sync2Res.Ok.Should().BeTrue(sync2Res.Reason);
 
-        // Phase 2: Leader vanishes (no more heartbeats for leaderId). Follower continues to heartbeat.
+        // Phase 2: Leader vanishes (no more heartbeats for silencedId). Follower continues to heartbeat.
         // The sweeper evicts the leader after 1s timeout.
         while (true)
         {
-            var hb = await client.HeartbeatAsync(new HeartbeatRequest { GroupId = groupId, MemberId = followerId, Generation = leaderJoin.Generation }, cancellationToken: cts.Token);
+            var hb = await client.HeartbeatAsync(new HeartbeatRequest { GroupId = groupId, MemberId = activeId, Generation = leaderJoin.Generation }, cancellationToken: cts.Token);
             if (!hb.Ok)
             {
                 (hb.Code == GroupErrorCode.GroupRebalanceInProgress || hb.Code == GroupErrorCode.GroupFenced).Should().BeTrue($"unexpected heartbeat error: {hb.Code}");
@@ -416,15 +421,19 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         }
 
         // Phase 3: Follower rejoins and becomes the new leader.
-        var followerRejoin = await client.JoinGroupAsync(new JoinGroupRequest { GroupId = groupId, MemberId = followerId, Topics = { topic } }, cancellationToken: cts.Token);
+        var followerRejoin = await client.JoinGroupAsync(new JoinGroupRequest { GroupId = groupId, MemberId = activeId, Topics = { topic } }, cancellationToken: cts.Token);
         followerRejoin.Ok.Should().BeTrue(followerRejoin.Reason);
         followerRejoin.IsLeader.Should().BeTrue("remaining member should be elected leader after previous leader vanished");
         followerRejoin.Members.Count.Should().Be(1, "only the follower should remain in the group");
+        
+        var remainingMemberId = followerRejoin.Members[0].MemberId;
+        remainingMemberId.Should().Be(activeId, "former follower must now be the new leader");
+        remainingMemberId.Should().NotBe(silencedId, "the vanished leader should have been evicted");
 
         var rejoinAssignments = strategy.Assign(followerRejoin.Members, partitionCounts);
         var syncFollowerRejoin = await client.SyncGroupAsync(new SyncGroupRequest 
         { 
-            GroupId = groupId, MemberId = followerId, Generation = followerRejoin.Generation, 
+            GroupId = groupId, MemberId = activeId, Generation = followerRejoin.Generation, 
             Assignments = { rejoinAssignments }
         }, cancellationToken: cts.Token);
         
