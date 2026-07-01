@@ -253,7 +253,11 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         while (true)
         {
             var hb = await client.HeartbeatAsync(new HeartbeatRequest { GroupId = groupId, MemberId = "m1", Generation = sync1.Generation }, cancellationToken: cts.Token);
-            if (!hb.Ok && (hb.Code == GroupErrorCode.GroupRebalanceInProgress || hb.Code == GroupErrorCode.GroupFenced)) break;
+            if (!hb.Ok)
+            {
+                (hb.Code == GroupErrorCode.GroupRebalanceInProgress || hb.Code == GroupErrorCode.GroupFenced).Should().BeTrue($"unexpected heartbeat error: {hb.Code}");
+                break;
+            }
             await Task.Delay(50, cts.Token);
         }
 
@@ -362,7 +366,11 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         while (true)
         {
             var hb = await client.HeartbeatAsync(new HeartbeatRequest { GroupId = groupId, MemberId = "m1", Generation = sync1.Generation }, cancellationToken: cts.Token);
-            if (!hb.Ok && (hb.Code == GroupErrorCode.GroupRebalanceInProgress || hb.Code == GroupErrorCode.GroupFenced)) break;
+            if (!hb.Ok)
+            {
+                (hb.Code == GroupErrorCode.GroupRebalanceInProgress || hb.Code == GroupErrorCode.GroupFenced).Should().BeTrue($"unexpected heartbeat error: {hb.Code}");
+                break;
+            }
             await Task.Delay(50, cts.Token);
         }
 
@@ -399,7 +407,11 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         while (true)
         {
             var hb = await client.HeartbeatAsync(new HeartbeatRequest { GroupId = groupId, MemberId = followerId, Generation = leaderJoin.Generation }, cancellationToken: cts.Token);
-            if (!hb.Ok && (hb.Code == GroupErrorCode.GroupRebalanceInProgress || hb.Code == GroupErrorCode.GroupFenced)) break;
+            if (!hb.Ok)
+            {
+                (hb.Code == GroupErrorCode.GroupRebalanceInProgress || hb.Code == GroupErrorCode.GroupFenced).Should().BeTrue($"unexpected heartbeat error: {hb.Code}");
+                break;
+            }
             await Task.Delay(50, cts.Token);
         }
 
