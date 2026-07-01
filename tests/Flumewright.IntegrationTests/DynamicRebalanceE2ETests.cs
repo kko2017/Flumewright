@@ -50,6 +50,7 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         await c1.CommitOffsetAsync(topic, iter1.Current.Partition, 2, cts.Token);
         
         await c1.LeaveGroupAsync(cts.Token);
+        await iter1.DisposeAsync();
         c1.Dispose(); // stop member 1 entirely
 
         using var c2 = new FlumewrightGroupConsumer(address, groupId, "member-2");
@@ -58,7 +59,6 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         var m3 = await iter2.MoveNextAsync();
         iter2.Current.Offset.Should().Be(2);
         
-        await iter1.DisposeAsync();
         await iter2.DisposeAsync();
     }
 
@@ -97,6 +97,8 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         var hbRes = await client.HeartbeatAsync(new HeartbeatRequest { GroupId = groupId, MemberId = "m1", Generation = gen1 }, cancellationToken: cts.Token);
         hbRes.Ok.Should().BeFalse();
         hbRes.Code.Should().Be(GroupErrorCode.GroupFenced);
+        
+        await join2Task;
     }
 
     [Fact]
@@ -120,7 +122,7 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         await iter.MoveNextAsync();
 
         // Legitimate use of Task.Delay (integration-only, real timeout): testing actual wall-clock session timeout against real broker
-        await Task.Delay(12000, cts.Token);
+        await Task.Delay(2000, cts.Token);
 
         await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes("msg-2"), partitionKey: new byte[] { 0 }, ct: cts.Token);
         await iter.MoveNextAsync(); 
@@ -146,7 +148,7 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         await client.SyncGroupAsync(new SyncGroupRequest { GroupId = groupId, MemberId = "dead", Generation = gen, Assignments = { new MemberAssignment { MemberId = "dead", Topic = topic, Partitions = { 0 } } } }, cancellationToken: cts.Token);
         
         // Legitimate use of Task.Delay (integration-only, real timeout): testing actual wall-clock session timeout against real broker
-        await Task.Delay(12000, cts.Token);
+        await Task.Delay(2000, cts.Token);
 
         using var c2 = new FlumewrightGroupConsumer(address, groupId, "member-2");
         var strategy = new RangeAssignmentStrategy();
