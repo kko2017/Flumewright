@@ -321,4 +321,118 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         }
         m2FinalPartitions.Should().BeEquivalentTo(M2Partitions);
     }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task MembershipLifecycle_LeaderVanish_RemainingMemberTakesOver()
+    {
+        var address = _factory.Address;
+        var topic = "it.rebalance.vanish." + Guid.NewGuid();
+        var groupId = "cg-" + Guid.NewGuid();
+        
+        using var channel = GrpcChannel.ForAddress(address);
+        var client = new MessageBus.MessageBusClient(channel);
+        using var publisher = new FlumewrightPublisher(address);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+
+        var partitionCountsPublished = new int[4];
+        var targetPartitions = new HashSet<int> { 0, 1, 2, 3 };
+        int keyIndex = 0;
+        
+        while (targetPartitions.Count > 0)
+        {
+            var ack = await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes($"init-{keyIndex}"), partitionKey: BitConverter.GetBytes(keyIndex), ct: cts.Token);
+            targetPartitions.Remove(ack.Partition);
+            partitionCountsPublished[ack.Partition]++;
+            keyIndex++;
+        }
+
+        // Phase 1: m1 joins alone
+        var join1 = await client.JoinGroupAsync(new JoinGroupRequest { GroupId = groupId, MemberId = "m1", Topics = { topic } }, cancellationToken: cts.Token);
+        join1.Ok.Should().BeTrue(join1.Reason);
+        var sync1 = await client.SyncGroupAsync(new SyncGroupRequest 
+        { 
+            GroupId = groupId, MemberId = "m1", Generation = join1.Generation, 
+            Assignments = { new MemberAssignment { MemberId = "m1", Topic = topic, Partitions = { 0, 1, 2, 3 } } }
+        }, cancellationToken: cts.Token);
+        sync1.Ok.Should().BeTrue();
+
+        // m2 joins, triggering rebalance. m1 discovers it via heartbeat.
+        var join2Task = client.JoinGroupAsync(new JoinGroupRequest { GroupId = groupId, MemberId = "m2", Topics = { topic } }, cancellationToken: cts.Token).ResponseAsync;
+        while (true)
+        {
+            var hb = await client.HeartbeatAsync(new HeartbeatRequest { GroupId = groupId, MemberId = "m1", Generation = sync1.Generation }, cancellationToken: cts.Token);
+            if (!hb.Ok && (hb.Code == GroupErrorCode.GroupRebalanceInProgress || hb.Code == GroupErrorCode.GroupFenced)) break;
+            await Task.Delay(50, cts.Token);
+        }
+
+        var join1Task = client.JoinGroupAsync(new JoinGroupRequest { GroupId = groupId, MemberId = "m1", Topics = { topic } }, cancellationToken: cts.Token).ResponseAsync;
+        var join1Res = await join1Task;
+        var join2Res = await join2Task;
+        
+        join1Res.Ok.Should().BeTrue(join1Res.Reason);
+        join2Res.Ok.Should().BeTrue(join2Res.Reason);
+        (join1Res.IsLeader ^ join2Res.IsLeader).Should().BeTrue();
+        
+        var leaderJoin = join1Res.IsLeader ? join1Res : join2Res;
+        var followerId = join1Res.IsLeader ? "m2" : "m1";
+        
+        var strategy = new RangeAssignmentStrategy();
+        var partitionCounts = new Dictionary<string, int> { { topic, 4 } };
+        var assignments = strategy.Assign(leaderJoin.Members, partitionCounts);
+
+        var sync1Req = new SyncGroupRequest { GroupId = groupId, MemberId = "m1", Generation = leaderJoin.Generation };
+        var sync2Req = new SyncGroupRequest { GroupId = groupId, MemberId = "m2", Generation = leaderJoin.Generation };
+        if (join1Res.IsLeader) sync1Req.Assignments.AddRange(assignments);
+        if (join2Res.IsLeader) sync2Req.Assignments.AddRange(assignments);
+
+        var sync1TaskInner = client.SyncGroupAsync(sync1Req, cancellationToken: cts.Token).ResponseAsync;
+        var sync2TaskInner = client.SyncGroupAsync(sync2Req, cancellationToken: cts.Token).ResponseAsync;
+        
+        var sync1Res = await sync1TaskInner;
+        var sync2Res = await sync2TaskInner;
+        sync1Res.Ok.Should().BeTrue(sync1Res.Reason);
+        sync2Res.Ok.Should().BeTrue(sync2Res.Reason);
+
+        // Phase 2: Leader vanishes (no more heartbeats for leaderId). Follower continues to heartbeat.
+        // The sweeper evicts the leader after 1s timeout.
+        while (true)
+        {
+            var hb = await client.HeartbeatAsync(new HeartbeatRequest { GroupId = groupId, MemberId = followerId, Generation = leaderJoin.Generation }, cancellationToken: cts.Token);
+            if (!hb.Ok && (hb.Code == GroupErrorCode.GroupRebalanceInProgress || hb.Code == GroupErrorCode.GroupFenced)) break;
+            await Task.Delay(50, cts.Token);
+        }
+
+        // Phase 3: Follower rejoins and becomes the new leader.
+        var followerRejoin = await client.JoinGroupAsync(new JoinGroupRequest { GroupId = groupId, MemberId = followerId, Topics = { topic } }, cancellationToken: cts.Token);
+        followerRejoin.Ok.Should().BeTrue(followerRejoin.Reason);
+        followerRejoin.IsLeader.Should().BeTrue("remaining member should be elected leader after previous leader vanished");
+        followerRejoin.Members.Count.Should().Be(1, "only the follower should remain in the group");
+
+        var rejoinAssignments = strategy.Assign(followerRejoin.Members, partitionCounts);
+        var syncFollowerRejoin = await client.SyncGroupAsync(new SyncGroupRequest 
+        { 
+            GroupId = groupId, MemberId = followerId, Generation = followerRejoin.Generation, 
+            Assignments = { rejoinAssignments }
+        }, cancellationToken: cts.Token);
+        
+        syncFollowerRejoin.Ok.Should().BeTrue(syncFollowerRejoin.Reason);
+        
+        // Assert new leader now owns all partitions
+        var finalAssignments = syncFollowerRejoin.Assignments.Single(a => a.Topic == topic).Partitions;
+        finalAssignments.Should().BeEquivalentTo(AllPartitions);
+
+        // Verify message flow for all partitions via the new leader
+        using var subFinal = client.Subscribe(new SubscribeRequest { Topic = topic, GroupId = groupId, Partitions = { finalAssignments }, Reset = OffsetReset.Earliest }, cancellationToken: cts.Token);
+        
+        var finalConsumed = new HashSet<int>();
+        int finalExpected = finalAssignments.Sum(p => partitionCountsPublished[p]);
+        for (int i = 0; i < finalExpected; i++)
+        {
+            var moved = await subFinal.ResponseStream.MoveNext(cts.Token);
+            moved.Should().BeTrue();
+            finalConsumed.Add(subFinal.ResponseStream.Current.Partition);
+        }
+        finalConsumed.Should().BeEquivalentTo(AllPartitions);
+    }
 }
