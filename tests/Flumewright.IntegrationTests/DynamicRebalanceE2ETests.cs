@@ -456,4 +456,67 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         }
         finalConsumed.Should().BeEquivalentTo(AllPartitions);
     }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task OffsetSemantics_Latest_StartsAtLogEnd_SingleMember()
+    {
+        var address = _factory.Address;
+        var topic = "it.rebalance.latest." + Guid.NewGuid();
+        var groupId = "cg-" + Guid.NewGuid();
+        
+        using var channel = GrpcChannel.ForAddress(address);
+        var client = new MessageBus.MessageBusClient(channel);
+        using var publisher = new FlumewrightPublisher(address);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+
+        // 1. Publish "old" messages before join
+        int numOld = 5;
+        for (int i = 0; i < numOld; i++)
+        {
+            await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes($"old-{i}"), partitionKey: BitConverter.GetBytes(i), ct: cts.Token);
+        }
+
+        // 2. Join the group and Sync the group
+        var join1 = await client.JoinGroupAsync(new JoinGroupRequest { GroupId = groupId, MemberId = "m1", Topics = { topic } }, cancellationToken: cts.Token);
+        join1.Ok.Should().BeTrue(join1.Reason);
+        
+        var sync1 = await client.SyncGroupAsync(new SyncGroupRequest 
+        { 
+            GroupId = groupId, MemberId = "m1", Generation = join1.Generation, 
+            Assignments = { new MemberAssignment { MemberId = "m1", Topic = topic, Partitions = { 0, 1, 2, 3 } } }
+        }, cancellationToken: cts.Token);
+        sync1.Ok.Should().BeTrue("SyncGroup establishes the subscription. Messages published after this will be seen by Latest.");
+
+        // 3. Subscribe with Latest (this establishes the read offset at the current log end)
+        using var subCall = client.Subscribe(new SubscribeRequest { Topic = topic, GroupId = groupId, Partitions = { 0, 1, 2, 3 }, Reset = OffsetReset.Latest }, cancellationToken: cts.Token);
+
+        // Allow broker a moment to process the subscribe and capture the LATEST offset
+        await Task.Delay(200, cts.Token);
+
+        // 4. Publish "new" messages
+        int numNew = 5;
+        for (int i = 0; i < numNew; i++)
+        {
+            await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes($"new-{i}"), partitionKey: BitConverter.GetBytes(i + 10), ct: cts.Token);
+        }
+
+        // 5. Assert only the "new" messages arrive
+
+        // 5. Assert only the "new" messages arrive
+        var receivedPayloads = new HashSet<string>();
+        for (int i = 0; i < numNew; i++)
+        {
+            var moved = await subCall.ResponseStream.MoveNext(cts.Token);
+            moved.Should().BeTrue();
+            receivedPayloads.Add(System.Text.Encoding.UTF8.GetString(subCall.ResponseStream.Current.Payload.Span));
+        }
+
+        receivedPayloads.Count.Should().Be(numNew);
+        foreach (var payload in receivedPayloads)
+        {
+            payload.Should().StartWith("new-", "only messages published after SyncGroup should be received when using OffsetReset.Latest");
+        }
+    }
 }
+
