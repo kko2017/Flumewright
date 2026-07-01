@@ -16,11 +16,13 @@ internal class GroupCoordinatorSweeperService : BackgroundService
         _coordinator = coordinator;
         _logger = logger;
         
-        double sessionTimeoutSec = configuration.GetValue<double>("Broker:SessionTimeoutSeconds", 10.0);
-        _sessionTimeout = TimeSpan.FromSeconds(sessionTimeoutSec > 0 ? sessionTimeoutSec : 10.0);
-        
-        double sweepIntervalSec = configuration.GetValue<double>("Broker:SweepIntervalSeconds", 2.0);
-        _sweepInterval = TimeSpan.FromSeconds(sweepIntervalSec > 0 ? sweepIntervalSec : 2.0);
+        _sessionTimeout = ResolveDuration(configuration.GetValue<double>("Broker:SessionTimeoutSeconds", 10.0), 10.0);
+        _sweepInterval = ResolveDuration(configuration.GetValue<double>("Broker:SweepIntervalSeconds", 2.0), 2.0);
+    }
+
+    internal static TimeSpan ResolveDuration(double configuredSeconds, double defaultSeconds)
+    {
+        return TimeSpan.FromSeconds(configuredSeconds > 0 ? configuredSeconds : defaultSeconds);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
