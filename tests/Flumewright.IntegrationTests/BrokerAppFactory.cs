@@ -19,6 +19,8 @@ public sealed class BrokerAppFactory : IAsyncLifetime
         var builder = WebApplication.CreateBuilder();
         builder.Configuration["Broker:Port"] = "0";
         builder.Configuration["Broker:PartitionsPerTopic"] = "4";
+        builder.Configuration["Broker:SessionTimeoutSeconds"] = "1";
+        builder.Configuration["Broker:SweepIntervalSeconds"] = "0.25";
 
         builder.WebHost.ConfigureKestrel(options =>
         {

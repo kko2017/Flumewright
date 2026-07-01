@@ -8,13 +8,15 @@ internal class GroupCoordinatorSweeperService : BackgroundService
 {
     private readonly IGroupCoordinator _coordinator;
     private readonly ILogger<GroupCoordinatorSweeperService> _logger;
-    private readonly TimeSpan _sessionTimeout = TimeSpan.FromSeconds(10);
-    private readonly TimeSpan _sweepInterval = TimeSpan.FromSeconds(2);
+    private readonly TimeSpan _sessionTimeout;
+    private readonly TimeSpan _sweepInterval;
 
-    public GroupCoordinatorSweeperService(IGroupCoordinator coordinator, ILogger<GroupCoordinatorSweeperService> logger)
+    public GroupCoordinatorSweeperService(IGroupCoordinator coordinator, ILogger<GroupCoordinatorSweeperService> logger, Microsoft.Extensions.Configuration.IConfiguration configuration)
     {
         _coordinator = coordinator;
         _logger = logger;
+        _sessionTimeout = TimeSpan.FromSeconds(configuration.GetValue<double>("Broker:SessionTimeoutSeconds", 10.0));
+        _sweepInterval = TimeSpan.FromSeconds(configuration.GetValue<double>("Broker:SweepIntervalSeconds", 2.0));
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
