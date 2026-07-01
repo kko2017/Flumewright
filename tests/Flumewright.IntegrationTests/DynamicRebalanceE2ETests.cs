@@ -532,5 +532,142 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
 
         receivedNew.Count.Should().Be(numNew);
     }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task OffsetSemantics_Latest_Rebalance_ResetsAtLogEnd_PerMember()
+    {
+        var address = _factory.Address;
+        var topic = "it.rebalance.latest.multi." + Guid.NewGuid();
+        var groupId = "cg-" + Guid.NewGuid();
+        
+        using var channel = GrpcChannel.ForAddress(address);
+        var client = new MessageBus.MessageBusClient(channel);
+        using var publisher = new FlumewrightPublisher(address);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        // 1. Publish "pre-join" messages to all partitions
+        for (int i = 0; i < 4; i++)
+        {
+            await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes($"pre-join-{i}"), partitionKey: BitConverter.GetBytes(i), ct: cts.Token);
+        }
+
+        // 2. m1 joins alone
+        var join1 = await client.JoinGroupAsync(new JoinGroupRequest { GroupId = groupId, MemberId = "m1", Topics = { topic } }, cancellationToken: cts.Token);
+        var sync1 = await client.SyncGroupAsync(new SyncGroupRequest 
+        { 
+            GroupId = groupId, MemberId = "m1", Generation = join1.Generation, 
+            Assignments = { new MemberAssignment { MemberId = "m1", Topic = topic, Partitions = { 0, 1, 2, 3 } } }
+        }, cancellationToken: cts.Token);
+        sync1.Ok.Should().BeTrue();
+
+        // 3. m1 subscribes with Latest
+        var sub1Call = client.Subscribe(new SubscribeRequest { Topic = topic, GroupId = groupId, Partitions = { 0, 1, 2, 3 }, Reset = OffsetReset.Latest }, cancellationToken: cts.Token);
+
+        // 4. Establish m1 cursor
+        var streamTask1 = sub1Call.ResponseStream.MoveNext(cts.Token);
+        while (!streamTask1.IsCompleted)
+        {
+            await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes("m1-marker-1"), partitionKey: BitConverter.GetBytes(0), ct: cts.Token);
+            await Task.WhenAny(streamTask1, Task.Delay(50, cts.Token));
+        }
+        await streamTask1;
+        var firstPayload1 = System.Text.Encoding.UTF8.GetString(sub1Call.ResponseStream.Current.Payload.Span);
+        firstPayload1.Should().Be("m1-marker-1");
+
+        // 5. m2 joins, rebalance
+        var join2Task = client.JoinGroupAsync(new JoinGroupRequest { GroupId = groupId, MemberId = "m2", Topics = { topic } }, cancellationToken: cts.Token).ResponseAsync;
+        
+        while (true)
+        {
+            var hb = await client.HeartbeatAsync(new HeartbeatRequest { GroupId = groupId, MemberId = "m1", Generation = sync1.Generation }, cancellationToken: cts.Token);
+            if (!hb.Ok && (hb.Code == GroupErrorCode.GroupRebalanceInProgress || hb.Code == GroupErrorCode.GroupFenced)) break;
+            await Task.Delay(50, cts.Token);
+        }
+
+        var join1Task = client.JoinGroupAsync(new JoinGroupRequest { GroupId = groupId, MemberId = "m1", Topics = { topic } }, cancellationToken: cts.Token).ResponseAsync;
+        
+        var join1Res = await join1Task;
+        var join2Res = await join2Task;
+        var leaderJoin = join1Res.IsLeader ? join1Res : join2Res;
+
+        // 6. Sync new assignments
+        var sync1Req = new SyncGroupRequest { GroupId = groupId, MemberId = "m1", Generation = leaderJoin.Generation };
+        var sync2Req = new SyncGroupRequest { GroupId = groupId, MemberId = "m2", Generation = leaderJoin.Generation };
+        var assignments = new[]
+        {
+            new MemberAssignment { MemberId = "m1", Topic = topic, Partitions = { 0, 1 } },
+            new MemberAssignment { MemberId = "m2", Topic = topic, Partitions = { 2, 3 } }
+        };
+        if (join1Res.IsLeader) sync1Req.Assignments.AddRange(assignments);
+        if (join2Res.IsLeader) sync2Req.Assignments.AddRange(assignments);
+
+        var sync1TaskInner = client.SyncGroupAsync(sync1Req, cancellationToken: cts.Token).ResponseAsync;
+        var sync2TaskInner = client.SyncGroupAsync(sync2Req, cancellationToken: cts.Token).ResponseAsync;
+        var sync1Res = await sync1TaskInner;
+        var sync2Res = await sync2TaskInner;
+        sync1Res.Ok.Should().BeTrue();
+        sync2Res.Ok.Should().BeTrue();
+
+        // Close old m1 subscription
+        sub1Call.Dispose();
+
+        // 7. Publish "pre-sub" messages to {2, 3} to ensure m2's Latest cursor skips them
+        await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes("pre-sub-2"), partitionKey: BitConverter.GetBytes(2), ct: cts.Token);
+        await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes("pre-sub-3"), partitionKey: BitConverter.GetBytes(3), ct: cts.Token);
+
+        // 8. m1 and m2 subscribe with Latest
+        var sub1Final = client.Subscribe(new SubscribeRequest { Topic = topic, GroupId = groupId, Partitions = { 0, 1 }, Reset = OffsetReset.Latest }, cancellationToken: cts.Token);
+        var sub2Final = client.Subscribe(new SubscribeRequest { Topic = topic, GroupId = groupId, Partitions = { 2, 3 }, Reset = OffsetReset.Latest }, cancellationToken: cts.Token);
+
+        // 9. Establish cursors
+        var streamTask1Final = sub1Final.ResponseStream.MoveNext(cts.Token);
+        while (!streamTask1Final.IsCompleted)
+        {
+            await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes("m1-marker-2"), partitionKey: BitConverter.GetBytes(0), ct: cts.Token);
+            await Task.WhenAny(streamTask1Final, Task.Delay(50, cts.Token));
+        }
+        await streamTask1Final;
+        System.Text.Encoding.UTF8.GetString(sub1Final.ResponseStream.Current.Payload.Span).Should().Be("m1-marker-2");
+
+        var streamTask2Final = sub2Final.ResponseStream.MoveNext(cts.Token);
+        while (!streamTask2Final.IsCompleted)
+        {
+            await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes("m2-marker-1"), partitionKey: BitConverter.GetBytes(2), ct: cts.Token);
+            await Task.WhenAny(streamTask2Final, Task.Delay(50, cts.Token));
+        }
+        await streamTask2Final;
+        System.Text.Encoding.UTF8.GetString(sub2Final.ResponseStream.Current.Payload.Span).Should().Be("m2-marker-1");
+
+        // 10. Publish new messages
+        for (int i = 0; i < 4; i++)
+        {
+            await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes($"new-{i}"), partitionKey: BitConverter.GetBytes(i), ct: cts.Token);
+        }
+
+        // 11. Read from m1 and m2
+        var m1Received = new HashSet<string>();
+        while (m1Received.Count < 2) // expects new-0, new-1
+        {
+            await sub1Final.ResponseStream.MoveNext(cts.Token);
+            var payload = System.Text.Encoding.UTF8.GetString(sub1Final.ResponseStream.Current.Payload.Span);
+            if (payload.StartsWith("new-")) m1Received.Add(payload);
+            else payload.Should().Be("m1-marker-2", "no old messages should appear");
+        }
+        m1Received.Should().BeEquivalentTo("new-0", "new-1");
+
+        var m2Received = new HashSet<string>();
+        while (m2Received.Count < 2) // expects new-2, new-3
+        {
+            await sub2Final.ResponseStream.MoveNext(cts.Token);
+            var payload = System.Text.Encoding.UTF8.GetString(sub2Final.ResponseStream.Current.Payload.Span);
+            if (payload.StartsWith("new-")) m2Received.Add(payload);
+            else payload.Should().Be("m2-marker-1", "no old messages should appear");
+        }
+        m2Received.Should().BeEquivalentTo("new-2", "new-3");
+
+        sub1Final.Dispose();
+        sub2Final.Dispose();
+    }
 }
 
