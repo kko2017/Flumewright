@@ -491,8 +491,20 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
         // 3. Subscribe with Latest (this establishes the read offset at the current log end)
         using var subCall = client.Subscribe(new SubscribeRequest { Topic = topic, GroupId = groupId, Partitions = { 0, 1, 2, 3 }, Reset = OffsetReset.Latest }, cancellationToken: cts.Token);
 
-        // Allow broker a moment to process the subscribe and capture the LATEST offset
-        await Task.Delay(200, cts.Token);
+        // Deterministic wait for subscription establishment: 
+        // We publish a "marker" repeatedly until the stream yields a message.
+        // If Latest works correctly, the very first message we receive MUST be "marker",
+        // meaning all "old" messages were correctly skipped.
+        var streamTask = subCall.ResponseStream.MoveNext(cts.Token);
+        while (!streamTask.IsCompleted)
+        {
+            await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes("marker"), partitionKey: BitConverter.GetBytes(0), ct: cts.Token);
+            await Task.WhenAny(streamTask, Task.Delay(50, cts.Token));
+        }
+
+        await streamTask; // propagate any errors
+        var firstPayload = System.Text.Encoding.UTF8.GetString(subCall.ResponseStream.Current.Payload.Span);
+        firstPayload.Should().Be("marker", "OffsetReset.Latest should skip all 'old' messages and only read messages published after the subscription is active");
 
         // 4. Publish "new" messages
         int numNew = 5;
@@ -501,22 +513,24 @@ public sealed class DynamicRebalanceE2ETests : IClassFixture<BrokerAppFactory>
             await publisher.PublishAckAsync(topic, System.Text.Encoding.UTF8.GetBytes($"new-{i}"), partitionKey: BitConverter.GetBytes(i + 10), ct: cts.Token);
         }
 
-        // 5. Assert only the "new" messages arrive
-
-        // 5. Assert only the "new" messages arrive
-        var receivedPayloads = new HashSet<string>();
-        for (int i = 0; i < numNew; i++)
+        // 5. Assert all "new" messages arrive
+        var receivedNew = new HashSet<string>();
+        while (receivedNew.Count < numNew)
         {
             var moved = await subCall.ResponseStream.MoveNext(cts.Token);
             moved.Should().BeTrue();
-            receivedPayloads.Add(System.Text.Encoding.UTF8.GetString(subCall.ResponseStream.Current.Payload.Span));
+            var payload = System.Text.Encoding.UTF8.GetString(subCall.ResponseStream.Current.Payload.Span);
+            if (payload.StartsWith("new-"))
+            {
+                receivedNew.Add(payload);
+            }
+            else
+            {
+                payload.Should().Be("marker", "no 'old' messages should ever be received");
+            }
         }
 
-        receivedPayloads.Count.Should().Be(numNew);
-        foreach (var payload in receivedPayloads)
-        {
-            payload.Should().StartWith("new-", "only messages published after SyncGroup should be received when using OffsetReset.Latest");
-        }
+        receivedNew.Count.Should().Be(numNew);
     }
 }
 
