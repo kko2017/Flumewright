@@ -3,14 +3,37 @@ updates:
   - package-ecosystem: "nuget"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore"
+    groups:
+      # All test-stack packages move together (xunit + its runner must stay in lockstep,
+      # and test-sdk / coverlet ride along) — avoids the split-pair problem.
+      test-stack:
+        patterns:
+          - "xunit*"
+          - "Microsoft.NET.Test.Sdk"
+          - "coverlet*"
+      # Everything else in one PR too, so a monthly run is at most a couple of PRs.
+      nuget-misc:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "xunit*"
+          - "Microsoft.NET.Test.Sdk"
+          - "coverlet*"
+
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     open-pull-requests-limit: 5
     commit-message:
       prefix: "ci"
+    groups:
+      # All GitHub Actions in one PR. This is what would have kept the CodeQL
+      # init + analyze bump together instead of two mismatched PRs.
+      github-actions:
+        patterns:
+          - "*"
