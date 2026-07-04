@@ -1,5 +1,6 @@
 using Flumewright.Broker.Core;
 using Flumewright.Broker.Services;
+using Flumewright.Broker.Interceptors;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 
 using Flumewright.Broker.Configuration;
@@ -42,7 +43,13 @@ builder.WebHost.ConfigureKestrel(options =>
     });
 });
 
-builder.Services.AddGrpc();
+builder.Services.AddGrpc(options =>
+{
+    if (mtlsConfig.RequireClientCertificate)
+    {
+        options.Interceptors.Add<MtlsIdentityInterceptor>();
+    }
+});
 builder.Services.AddSingleton<ITopicStore, InMemoryTopicStore>();
 builder.Services.AddSingleton<ICommittedOffsetStore, InMemoryCommittedOffsetStore>();
 builder.Services.AddSingleton<IGroupCoordinator, GroupCoordinator>();
