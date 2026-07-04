@@ -48,7 +48,21 @@ public class MtlsIdentityInterceptor : Interceptor
 
     private static void ExtractIdentity(ServerCallContext context)
     {
-        var httpContext = context.GetHttpContext();
+        HttpContext? httpContext = null;
+        try
+        {
+            httpContext = context.GetHttpContext();
+        }
+        catch (InvalidOperationException)
+        {
+            // GetHttpContext throws if not hosted by ASP.NET Core
+        }
+
+        if (httpContext == null)
+        {
+            throw new RpcException(new Status(StatusCode.Unauthenticated, "HTTP context is missing."));
+        }
+
         var clientCert = httpContext.Connection.ClientCertificate;
 
         if (clientCert == null)
