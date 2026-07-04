@@ -33,6 +33,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Flumewright.LoadTests", "te
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Flumewright.ConcurrencyTests", "tests\Flumewright.ConcurrencyTests\Flumewright.ConcurrencyTests.csproj", "{B13CC12A-20A6-48E7-A94C-5E57631CF9FF}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tools", "tools", "{50C41947-8891-4F63-B18A-6B6D0D57D8EC}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Flumewright.CertGen", "tools\Flumewright.CertGen\Flumewright.CertGen.csproj", "{49667D68-BD4C-42D1-B191-A144996CD26B}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -90,6 +94,10 @@ Global
 		{B13CC12A-20A6-48E7-A94C-5E57631CF9FF}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{B13CC12A-20A6-48E7-A94C-5E57631CF9FF}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{B13CC12A-20A6-48E7-A94C-5E57631CF9FF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{49667D68-BD4C-42D1-B191-A144996CD26B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{49667D68-BD4C-42D1-B191-A144996CD26B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{49667D68-BD4C-42D1-B191-A144996CD26B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{49667D68-BD4C-42D1-B191-A144996CD26B}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{76B62386-E67D-411C-8B23-BDCFBC2D28F8} = {CF8903F1-854D-4F93-A888-22EE3CC16E13}
@@ -104,5 +112,6 @@ Global
 		{4B297F0E-75E6-4097-BC48-206CBE53F3F9} = {185408F4-FA9C-4ADA-BF9D-3068042399CA}
 		{53657D68-8149-4BA8-8FDC-03024812C032} = {185408F4-FA9C-4ADA-BF9D-3068042399CA}
 		{B13CC12A-20A6-48E7-A94C-5E57631CF9FF} = {185408F4-FA9C-4ADA-BF9D-3068042399CA}
+		{49667D68-BD4C-42D1-B191-A144996CD26B} = {50C41947-8891-4F63-B18A-6B6D0D57D8EC}
 	EndGlobalSection
 EndGlobal
