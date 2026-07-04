@@ -89,7 +89,7 @@ public static class CertificateGenerator
         var notBefore = DateTimeOffset.UtcNow;
         var notAfter = notBefore.Add(CertValidity);
 
-        var cert = request.CreateSelfSigned(notBefore, notAfter);
+        using var cert = request.CreateSelfSigned(notBefore, notAfter);
         // Re-export to get an X509Certificate2 with a usable private key on all platforms
         return new X509Certificate2(
             cert.Export(X509ContentType.Pfx),
@@ -149,7 +149,7 @@ public static class CertificateGenerator
 
         using var signedCert = request.Create(caCert, notBefore, notAfter, serial);
         // Attach private key and re-export for a usable cert
-        var certWithKey = signedCert.CopyWithPrivateKey(key);
+        using var certWithKey = signedCert.CopyWithPrivateKey(key);
         return new X509Certificate2(
             certWithKey.Export(X509ContentType.Pfx),
             (string?)null,
@@ -205,7 +205,7 @@ public static class CertificateGenerator
         var notAfter = caCert.NotAfter;
 
         using var signedCert = request.Create(caCert, notBefore, notAfter, serial);
-        var certWithKey = signedCert.CopyWithPrivateKey(key);
+        using var certWithKey = signedCert.CopyWithPrivateKey(key);
         return new X509Certificate2(
             certWithKey.Export(X509ContentType.Pfx),
             (string?)null,
