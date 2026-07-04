@@ -1,11 +1,11 @@
 using Flumewright.Broker.Core;
 using Flumewright.Broker.Services;
-using Flumewright.Broker.Interceptors;
-using Microsoft.AspNetCore.Server.Kestrel.Core;
-
 using Flumewright.Broker.Configuration;
-using System.Security.Cryptography.X509Certificates;
+using Flumewright.Broker.Interceptors;
+using Flumewright.Security.Cryptography;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
+using System.Security.Cryptography.X509Certificates;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -27,17 +27,7 @@ builder.WebHost.ConfigureKestrel(options =>
             {
                 ServerCertificate = serverCert,
                 ClientCertificateMode = ClientCertificateMode.RequireCertificate,
-                ClientCertificateValidation = (cert, chain, errors) =>
-                {
-                    if (cert == null) return false;
-
-                    using var customChain = new X509Chain();
-                    customChain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-                    customChain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
-                    customChain.ChainPolicy.CustomTrustStore.Add(caCert);
-
-                    return customChain.Build(cert);
-                }
+                ClientCertificateValidation = (cert, chain, errors) => ClientCertificateValidator.Validate(cert, caCert)
             });
         }
     });
