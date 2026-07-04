@@ -2,13 +2,44 @@ using Flumewright.Broker.Core;
 using Flumewright.Broker.Services;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 
+using Flumewright.Broker.Configuration;
+using System.Security.Cryptography.X509Certificates;
+using Microsoft.AspNetCore.Server.Kestrel.Https;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// M1: plaintext HTTP/2 (h2c). mTLS/HTTPS is M4.
+var mtlsConfig = MtlsConfig.FromConfiguration(builder.Configuration);
+var port = builder.Configuration.GetValue<int>("Broker:Port", 5050);
+
 builder.WebHost.ConfigureKestrel(options =>
 {
-    var port = builder.Configuration.GetValue<int>("Broker:Port", 5050);
-    options.ListenAnyIP(port, listen => listen.Protocols = HttpProtocols.Http2);
+    options.ListenAnyIP(port, listen =>
+    {
+        listen.Protocols = HttpProtocols.Http2;
+
+        if (mtlsConfig.RequireClientCertificate)
+        {
+            var serverCert = new X509Certificate2(mtlsConfig.ServerCertPath!);
+            var caCert = new X509Certificate2(mtlsConfig.CaCertPath!);
+
+            listen.UseHttps(new HttpsConnectionAdapterOptions
+            {
+                ServerCertificate = serverCert,
+                ClientCertificateMode = ClientCertificateMode.RequireCertificate,
+                ClientCertificateValidation = (cert, chain, errors) =>
+                {
+                    if (cert == null) return false;
+
+                    using var customChain = new X509Chain();
+                    customChain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+                    customChain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+                    customChain.ChainPolicy.CustomTrustStore.Add(caCert);
+
+                    return customChain.Build(cert);
+                }
+            });
+        }
+    });
 });
 
 builder.Services.AddGrpc();
