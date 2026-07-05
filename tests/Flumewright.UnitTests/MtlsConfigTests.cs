@@ -8,7 +8,7 @@ using Xunit;
 
 namespace Flumewright.UnitTests;
 
-public class MtlsConfigTests : IDisposable
+public sealed class MtlsConfigTests : IDisposable
 {
     private readonly string _tempServerCertPath;
     private readonly string _tempCaCertPath;
