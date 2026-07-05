@@ -32,10 +32,13 @@ public class MtlsIntegrationTests : IClassFixture<MtlsBrokerAppFactory>
                 {
                     if (cert == null) return false;
                     using var customChain = new X509Chain();
+                    // [suppress: local test CA publishes no CRL/OCSP]
                     customChain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
                     customChain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
                     customChain.ChainPolicy.CustomTrustStore.Add(_factory.CaCert);
-                    return customChain.Build(new X509Certificate2(cert));
+                    
+                    using var certToBuild = new X509Certificate2(cert);
+                    return customChain.Build(certToBuild);
                 }
             }
         };
@@ -80,7 +83,19 @@ public class MtlsIntegrationTests : IClassFixture<MtlsBrokerAppFactory>
         }, cancellationToken: cts.Token);
         
         var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.Unavailable);
+        
+        Exception? current = ex.Which;
+        bool foundTransportError = false;
+        while (current != null)
+        {
+            if (current is System.IO.IOException || current is System.Security.Authentication.AuthenticationException)
+            {
+                foundTransportError = true;
+                break;
+            }
+            current = current.InnerException;
+        }
+        foundTransportError.Should().BeTrue("Handshake failure should manifest as a transport-level IOException or AuthenticationException");
     }
 
     [Fact]
@@ -98,6 +113,18 @@ public class MtlsIntegrationTests : IClassFixture<MtlsBrokerAppFactory>
         }, cancellationToken: cts.Token);
         
         var ex = await act.Should().ThrowAsync<RpcException>();
-        ex.Which.StatusCode.Should().Be(StatusCode.Unavailable);
+        
+        Exception? current = ex.Which;
+        bool foundTransportError = false;
+        while (current != null)
+        {
+            if (current is System.IO.IOException || current is System.Security.Authentication.AuthenticationException)
+            {
+                foundTransportError = true;
+                break;
+            }
+            current = current.InnerException;
+        }
+        foundTransportError.Should().BeTrue("Handshake failure should manifest as a transport-level IOException or AuthenticationException");
     }
 }

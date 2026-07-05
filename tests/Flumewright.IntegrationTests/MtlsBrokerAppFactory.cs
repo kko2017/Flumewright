@@ -29,6 +29,8 @@ public sealed class MtlsBrokerAppFactory : IAsyncLifetime
     
     public string Address { get; private set; } = "";
     public GeneratedCertificates? Certs { get; private set; }
+    private X509Certificate2? _serverCert;
+    private X509Certificate2? _caCert;
 
     public X509Certificate2 ValidClientCert => Certs!.Clients[0];
     public X509Certificate2 UntrustedClientCert => Certs!.Untrusted;
@@ -60,14 +62,14 @@ public sealed class MtlsBrokerAppFactory : IAsyncLifetime
             {
                 listen.Protocols = HttpProtocols.Http2;
 
-                var serverCert = new X509Certificate2(mtlsConfig.ServerCertPath!);
-                var caCert = new X509Certificate2(mtlsConfig.CaCertPath!);
+                _serverCert = new X509Certificate2(mtlsConfig.ServerCertPath!);
+                _caCert = new X509Certificate2(mtlsConfig.CaCertPath!);
 
                 listen.UseHttps(new HttpsConnectionAdapterOptions
                 {
-                    ServerCertificate = serverCert,
+                    ServerCertificate = _serverCert,
                     ClientCertificateMode = ClientCertificateMode.RequireCertificate,
-                    ClientCertificateValidation = (cert, chain, errors) => ClientCertificateValidator.Validate(cert, caCert)
+                    ClientCertificateValidation = (cert, chain, errors) => ClientCertificateValidator.Validate(cert, _caCert)
                 });
             });
         });
@@ -101,6 +103,8 @@ public sealed class MtlsBrokerAppFactory : IAsyncLifetime
     {
         if (_app is not null) await _app.DisposeAsync();
         
+        _serverCert?.Dispose();
+        _caCert?.Dispose();
         Certs?.Dispose();
         
         if (Directory.Exists(_tempDir))
@@ -109,7 +113,8 @@ public sealed class MtlsBrokerAppFactory : IAsyncLifetime
             {
                 Directory.Delete(_tempDir, true);
             }
-            catch { /* Ignore */ }
+            catch { // [suppress: cleanup best-effort] 
+            }
         }
     }
 }
