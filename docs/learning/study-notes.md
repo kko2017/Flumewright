@@ -204,6 +204,48 @@ mTLS provides two things at once:
 1. **Encryption** — prevents eavesdropping in transit (TLS basics).
 2. **Mutual authentication** — only legitimate clients/brokers holding certificates may connect.
 
+### Why mTLS specifically — the requirement is identity, not the protocol ⭐ Key concept
+A subtle point worth separating: mTLS is not chosen *because* the transport is gRPC or HTTP/2. The real
+requirement is that **the broker must know who each client is** (so that later, e.g., a topic can be
+restricted to one service). That requirement — *identity* — can be met several ways: mTLS (certificates),
+SASL/SCRAM (password-family), OAuth (tokens). These are **mechanisms**; identity is the **need**. We chose
+mTLS because: (a) Kafka-fidelity — Kafka's canonical auth is `ssl.client.auth=required` (mTLS); (b) it fits
+service-to-service — clients are services, not humans, and a certificate deployed with a service is more
+natural than a password a human types; (c) it lives at the transport layer, so handlers need no change —
+identity rides the connection. gRPC/HTTP/2 is a *favourable condition* (TLS-on-gRPC is standard, Kestrel
+validates client certs natively), not the reason. The takeaway generalizes: **separate the requirement
+(identity) from the mechanism (mTLS/SASL/OAuth); pick the mechanism that fits the actors and the stack.**
+
+### A certificate carries identity AND purpose — EKU / OID ⭐ Key concept
+A certificate is not just "who I am" — it also declares "what I may be used for", via the **Extended Key
+Usage (EKU)** extension: `serverAuth` (prove I'm a server) vs `clientAuth` (prove I'm a client), among
+others. Analogy: a passport and a driver's licence are both valid IDs from the same authority, but you can't
+drive on a passport — the *purpose* differs. Each purpose has a globally-unique **OID (Object Identifier)**,
+a dotted number tree (`1.3.6.1.5.5.7.3.1` = serverAuth, `...3.2` = clientAuth; `1.3.6.1.5.5.7` is the PKIX
+arc) — like a postal code, hierarchical and unambiguous, so any system anywhere means the same thing by it.
+Why it mattered here (09 FIX-023): our single CA signs *both* the broker (serverAuth) and client (clientAuth)
+certs, so validating only the chain (was it signed by our CA?) would accept a **server** cert presented as a
+**client** cert — "driving on a passport". The fix checks the clientAuth EKU by OID value, not just the
+chain. General rule: **validate a certificate's purpose (EKU), not only its chain of trust — especially when
+one CA signs multiple roles.**
+
+### Fail-fast vs fail-closed — two security disciplines at two moments ⭐ Key concept
+Two principles that sound alike but apply at different times, both surfaced by M4 (09 DEC-037, DEC-034):
+- **Fail-fast** — a *startup* discipline: if something is misconfigured, refuse to start, loudly. When mTLS
+  is switched on but a cert path is missing/invalid, the broker throws at startup rather than booting. The
+  opposite (a *silent downgrade* to plaintext — "no cert? run without security") is far more dangerous: it
+  boots looking healthy while security is off, and the operator never knows.
+- **Fail-closed** — a *request-time* discipline: when a decision can't be made safely, deny. An empty CN, or
+  a missing HTTP context, yields `Unauthenticated` rather than an accidental pass. (Analogy: on power loss a
+  bank vault locks — fail-closed — while a fire exit unlocks — fail-open; the failure *direction* is designed
+  per what's at stake.)
+- The connecting insight — **when is a fallback right vs wrong?** DEC-030 made a bad *sweeper timeout* fall
+  back to a safe default (correct — a default timeout *is* safe). A security switch has no safe fallback
+  ("security off" isn't safe). So the test is: **is the fallen-back state safe? Numbers fall back; security
+  fails fast.** Pair them: fail-fast at startup, fail-closed at request time. And note the contrast with an
+  *accidental* failure (an NRE from an unchecked null) — in security code every failure must be a *designed*
+  denial, because an accidental one gives no guarantee of which direction it leans (it could fail *open*).
+
 ### Certificate Structure
 ```
         CA (Certificate Authority)
@@ -848,9 +890,7 @@ two things at once — the stream is now live, and (for `Latest`) everything pub
 skipped. In a multi-member rebalance you do this **per member**, because each consumer's cursor is pinned at
 *its own* stream activation, independently. The general principle to carry forward: **an OK response marks
 that a step succeeded, not that its downstream effect is observable yet; when a test depends on that effect,
-find and observe the actual activation moment rather than trusting the ack.** (This will recur at mTLS: "the
-handshake returned" is not "the connection is authenticated and serving" — the ready moment is a specific,
-observable point.)
+find and observe the actual activation moment rather than trusting the ack.** (This recurred at mTLS exactly as predicted: a rejected handshake is observed not at channel creation but at the **first RPC** (gRPC connects lazily), and its surface `RpcException.StatusCode` is non-deterministic — `Unavailable` on some runs, `Internal` on others, depending on TLS-stream-close timing — while the **inner exception is always the same** transport/handshake failure. The lesson's sibling: an exception's *surface code* is not the essence of the failure; when the surface flakes, assert the deterministic underlying cause — here, the inner `IOException`/`AuthenticationException` by type, never the StatusCode. 09 FIX-024.)
 
 ### Observe the outcome, don't dictate it — the ownership-assertion trap 🔒
 Another rebuild lesson (09 FIX-022), a cousin of fake-green. To check that a rebalance split partitions
@@ -887,6 +927,25 @@ production values), and let tests dial it down. Two independent axes are at play
 *removing a reception race* (use `Earliest` / fix ordering) is about determinism of *what* is observed;
 *shrinking the wait* (short injected timeout) is about the *cost* of observing it. The leader-vanish rebuild
 needed both.
+
+### A hook nothing consumes yet can't be proven end-to-end — split test layers along the observable boundary 🔒
+From M4 mTLS (09 DEC-036). M4 extracts the client identity onto the request context but **enforces nothing**
+with it (authorization is a later milestone). That creates a verification problem: "the identity landed on
+the context" has **no externally observable effect** — every RPC succeeds identically whether the caller is
+alice or bob, and the response carries no identity. An integration test (which sees only what a client sees)
+therefore *cannot* prove the hook works; there is nothing to assert from outside. Forcing observability would
+mean adding a debug/whoami RPC — which changes the proto for test convenience, unwanted.
+
+The resolution is to split verification along the boundary of what is actually observable: **unit tests**
+verify identity *extraction* (feed the interceptor a cert, assert the principal lands in the expected slot —
+looking *inside* the process); **integration tests** verify the *transport* property (valid cert connects,
+invalid/untrusted is rejected — the observable outside effect); and the **end-to-end proof that the context
+identity is consumed is deferred to its first consumer** (the ACL milestone, which reads it for real — when
+alice is allowed and bob denied, that *is* the e2e evidence the hook works). The general principle: **a hook
+that nothing consumes yet cannot be end-to-end tested from outside; split test layers along the boundary of
+what is observable, and let the hook's first real consumer supply the e2e proof.** This is the third sibling
+of "observe, don't dictate" and "an OK response ≠ the effect is live" above — all three ask the same question:
+*what is actually observable here?*
 
 ---
 

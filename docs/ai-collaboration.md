@@ -52,6 +52,15 @@ things you deferred. The following mechanisms were designed to prevent that.
   classified into [correctness/bug] / [consistency/cleanup] / [out-of-scope]. The human approves before
   any fix. The decision log (which lists intentionally-deferred items) is attached as a guardrail so the
   agent doesn't re-flag them.
+- **Standing rules over per-prompt reminders.** The CLI's durable rules live in a `GEMINI.md` the agent
+  reads every session; every instruction opens by pointing at it. This survives session resets (the CLI
+  has no memory across sessions) and keeps the git boundary, per-file staging, and stop rule in force
+  without re-stating them each time.
+- **Discipline holds through the finish, not just the start.** The most dangerous moment is the wrap-up:
+  once a milestone "looks done", both the agent and the reviewer relax — completion inertia. A late slice
+  is treated with the same checkpoint rigor as the first (this caught an EKU security gap in mTLS at the
+  *last* code checkpoint, after the CLI and a review sub-agent had both passed it). "A completion signal
+  does not suspend the rules" is written into the standing rules for exactly this reason.
 
 ---
 
@@ -69,8 +78,23 @@ This caught real defects the AI reported as successes:
   to *subscriber* writes and awaited per subscriber. Caught in code review, fixed with non-blocking
   `TryWrite`.
 
+Later milestones produced stronger instances of the same discipline:
+
+- **FIX-021 — a flaky test nearly misdiagnosed as a product bug.** A CI-only e2e failure looked like a
+  rebalance defect; investigating (rather than "fixing" the product) proved the product self-heals and the
+  *test* was timing-fragile. Diagnose before fixing: a red CI is a symptom, not a diagnosis.
+- **FIX-023 — an EKU security gap caught by an independent code read.** mTLS certificate validation checked
+  the chain but not the certificate's *purpose* (EKU), so a CA-signed server cert would have passed as a
+  client cert. Neither the CLI nor the review sub-agent flagged it; the orchestrator's own read of the code
+  at the checkpoint did. Three independent layers, and only the third caught it — the case for reading the
+  code, not the report.
+- **A flaky test surfaced by a dependency bump.** A test-runner upgrade exposed a latent timing-dependent
+  unit test that had been passing by luck; the product was correct. Confirmed flaky (re-run passed), then
+  quarantined for a test-only fix rather than a rushed change.
+
 These are recorded in the decision-and-fix log with cause and future impact. The lesson encoded into
-the workflow: **read the code, verify the tests actually assert, never trust the summary alone.**
+the workflow: **read the code, verify the tests actually assert, never trust the summary alone** — and when
+a flaky test has a history, raise the verification bar (the mTLS reject tests were run 20×, not once).
 
 ---
 
@@ -107,6 +131,16 @@ A small set of documents makes the workflow repeatable and auditable:
 | *(personal, not committed)* handoff note + step instructions + verification log | Drive day-to-day execution and recovery |
 
 All repository text is English; Korean drafts are kept outside the repo for personal reference.
+
+**Designed for a memory-less reader.** A subtle but load-bearing principle: the primary readers of these
+docs are AI sessions that reset between conversations — the orchestrator and the CLI both start each session
+knowing nothing. What suffices for a human (a table of contents, a heading) is not enough for a reader with
+no memory to trigger: a heading is a recall cue, and an AI has no recollection to cue. So the doc system
+leans on devices that serve the memory-less reader — stable **ID schemes** (DEC/FIX numbers) for precise
+cross-reference, a **one-line index** of every decision (so "what was DEC-031?" is answered by scanning, not
+by opening each entry), **fixed entry formats** (symptom → cause → fix → future) so partial reads work, and
+**self-contained instructions** that re-brief context every time. The general lesson: **when a document's
+readers include AI, document design changes — build for the reader with no memory.**
 
 ---
 

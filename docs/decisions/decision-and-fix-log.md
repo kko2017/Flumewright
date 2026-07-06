@@ -7,32 +7,11 @@
 >
 > Repo location: `docs/decisions/decision-and-fix-log.md` (companion to the ADRs).
 
----
-
-## Deferred Items Ledger
-
-A single checkpoint for everything we consciously deferred, so "later" doesn't become "never". When a
-milestone starts, scan this table for items tagged to it. Plans may change at that point — that is the
-intent: each milestone boundary is a review moment, not a binding contract. The authoritative detail lives
-in the referenced DEC/FIX entry or design note; this table is the index.
-
-| Item | What | Deferred to | Status / revisit |
-|------|------|-------------|------------------|
-| DEC-001 | Streaming Publish (unary → client/bidi stream) | M5 | Open — revisit M5 |
-| DEC-002 | `Acknowledge` RPC | M3 | **Closed — superseded.** ack = offset commit (M3a `CommitOffset`); nack = SDK pattern (publish to retry/dlq topic), no broker RPC. See M3b design note. |
-| DEC-002 | `Admin` RPC (topic management) | M3 | Open — when topic management is actually needed (not M3a/b/c) |
-| DEC-006 | Disposal: in-flight / redelivery timers & schedulers | M3 | **Deferred further → Phase 2.** M3b uses no-delay non-blocking retry (no timers). Applies when delayed backoff is built (see "delayed backoff" row). |
-| DEC-006 | Disposal: `X509Certificate2` (secure connections) | M4 | Open — M4 (mTLS) |
-| DEC-006 | Disposal: disk WAL `FileStream` / segment handles | Phase 2 | Open — Phase 2 (`DiskTopicStore` as `IAsyncDisposable`) |
-| DEC-006 | Bound `_topics` dictionary growth (slow leak under many distinct topics) | M2+ | Open — revisit (no firm milestone) |
-| DEC-004 | certs/keys + logs gitignore realization | M4 / M6 | Partial — M4 certgen → `certs/`; M6 logging → `logs/` |
-| DEC-017 | Microsoft Coyote (systematic concurrency testing) 🔒 | after M3 | Open — after M3c (M3 adds consumer-group/offset-commit concurrency; Coyote lands naturally after) |
-| FIX (M1) | Test enumerator `await using` (~7 tests) | — | Open — low priority; one commit when touched |
-| M3b design | **Delayed / multi-stage retry backoff** (retry-1/2/3 with increasing delay) 🔒 | **Phase 2** | NEW — requires a delayed-redelivery scheduling mechanism (cannot sleep the consumer; due-time pause/resume). M3b opens the structure (`RetryPolicy` returns destination + delay); Phase 2 implements the delay. |
-| M3b design | **Blocking (in-place) retry mode** 🔒 | **Phase 2** | NEW — shares the same delay mechanism as multi-stage backoff, so built together in Phase 2. M3b leaves it as an extension point only; non-blocking is the M3b default. Use case: transient downstream failures where preserving order is worth blocking. |
-| FIX-021 | **Rebuild the flaky composite e2e tests, stage-isolated** 🔒 | M4 | **Closed — FIX-022.** Rebuilt as four one-rebalance-per-test integration tests (split, leader-vanish, `Latest` single, `Latest`×rebalance), deterministic, real sweeper for liveness; 10× flake-free; suite 17 → 21. |
-| DEC-028 | **Shift-left SonarAnalyzer rules into local build + pre-commit** (`.editorconfig`) + GEMINI.md coding conventions 🔒 | M4 | **Closed — DEC-029.** Tier 1 (CA1822/CA1861) local hard-gate + VSTHRD200 test-scope; no Sonar package locally; merged at M4 start. |
-| DEC-030 | **Move session-timeout ownership into `GroupCoordinator`** (coordinator owns its eviction policy; `SweepDeadMembers` takes no arg) 🔒 | later (unset) | NEW — proposal, NOT a defect. Zoom-out suggestion; deferred because it is an architectural refactor out of the test-rebuild scope AND would modify `GroupCoordinator.cs` (Coyote-visible), breaking the clean separation. Revisit if the config surface grows. |
+> **Reading order:** a table of contents is next. The one-line **Index** and the **Deferred
+> Items Ledger** are at the **end** of this document (they are long; moved there so the TOC stays
+> near the top for human navigation). *An AI/agent reading this should start with those two at the
+> end — the Index gives the gist of every entry, the Ledger lists what is deferred — then use the
+> TOC to jump to specific entries.*
 
 ---
 
@@ -71,6 +50,11 @@ in the referenced DEC/FIX entry or design note; this table is the index.
 - [DEC-030 — Sweeper timing is a configurable seam for testability; wall-clock dependency kept, the clock shortened 🔒](#dec-030--sweeper-timing-session-timeout--sweep-interval-is-a-configurable-seam-for-testability-wall-clock-dependency-kept-the-clock-shortened-)
 - [DEC-031 — `SyncGroup Ok` establishes group membership, NOT the Subscribe stream's read cursor; a `Latest` cursor is pinned only at stream activation 🔒](#dec-031--syncgroup-ok-establishes-group-membership-not-the-subscribe-streams-read-cursor-a-latest-cursor-is-pinned-only-at-stream-activation-)
 - [DEC-032 — Discipline eroded in the wrap-up phase: missing GEMINI.md reference in instructions + completion inertia + a git-boundary wording flaw 🔒](#dec-032--discipline-eroded-in-the-wrap-up-phase-missing-geminimd-reference-in-instructions--completion-inertia--a-git-boundary-wording-flaw-)
+- [DEC-033 — ACL (authorization) is a separate later milestone; M4 lays only the interceptor seam + the M5 no-bypass guard 🔒](#dec-033--acl-authorization-is-a-separate-later-milestone-m4-lays-only-the-interceptor-seam--the-m5-no-bypass-guard-)
+- [DEC-034 — Principal shape: `User:<CN>` stored in `ServerCallContext.UserState` under a fixed constant key 🔒](#dec-034--principal-shape-usercn-stored-in-servercallcontextuserstate-under-a-fixed-constant-key-)
+- [DEC-035 — The mTLS switch defaults OFF (DEC-030 config-seam pattern); existing tests run unchanged on plaintext 🔒](#dec-035--the-mtls-switch-defaults-off-dec-030-config-seam-pattern-existing-tests-run-unchanged-on-plaintext-)
+- [DEC-036 — Identity verification is split by layer: unit for extraction, integration for transport accept/reject, e2e proof deferred to ACL 🔒](#dec-036--identity-verification-is-split-by-layer-unit-for-extraction-integration-for-transport-acceptreject-e2e-proof-deferred-to-acl-)
+- [DEC-037 — Security config fails fast; it never silently downgrades (contrast with DEC-030's numeric fallback) 🔒](#dec-037--security-config-fails-fast-it-never-silently-downgrades-contrast-with-dec-030s-numeric-fallback-)
 
 ### Fixes (FIX)
 - [FIX-001 — Fan-out broken: a shared per-topic channel delivered to only one subscriber](#fix-001--fan-out-broken-a-shared-per-topic-channel-delivered-to-only-one-subscriber)
@@ -95,6 +79,12 @@ in the referenced DEC/FIX entry or design note; this table is the index.
 - [FIX-020 — A CI iteration guard so a future regression can't silently drop Coyote to one iteration 🔒](#fix-020--a-ci-iteration-guard-so-a-future-regression-cant-silently-drop-coyote-to-one-iteration-)
 - [FIX-021 — A CI-only e2e failure that looked like a rebalance defect but was a flaky test against correct product behaviour 🔒](#fix-021--a-ci-only-e2e-failure-that-looked-like-a-rebalance-defect-but-was-a-flaky-test-against-correct-product-behaviour-)
 - [FIX-022 — Rebuilt the flaky composite e2e tests (FIX-021 gap closed): stage-isolated, deterministic, real-sweeper liveness 🔒](#fix-022--rebuilt-the-flaky-composite-e2e-tests-fix-021-gap-closed-stage-isolated-deterministic-real-sweeper-liveness-)
+- [FIX-023 — The client-certificate validation callback checked the chain but NOT the EKU, so a CA-signed server cert passed as a client cert 🔒](#fix-023--the-client-certificate-validation-callback-checked-the-chain-but-not-the-eku-so-a-ca-signed-server-cert-passed-as-a-client-cert-)
+- [FIX-024 — mTLS reject tests asserted a flaky gRPC StatusCode; fixed by asserting the stable inner exception 🔒](#fix-024--mtls-reject-tests-asserted-a-flaky-grpc-statuscode-fixed-by-asserting-the-stable-inner-exception-)
+
+
+- [Index (one-line summary of every entry)](#index-one-line-summary-of-every-entry)
+- [Deferred Items Ledger](#deferred-items-ledger)
 
 ---
 
@@ -1385,5 +1375,184 @@ The execution detail of DEC-028. The goal: the ~44 SonarCloud findings each mile
 - Work rhythm: add — "A wrap-up/completion signal does NOT suspend discipline: each step still stops at its checkpoint, zoom-out review stays report-only until the user approves, and out-of-milestone work (e.g. running suites the milestone did not ask for) is not started. Finishing is not a license to skip verification."
 
 **Meta-note.** The weighting of these strands was itself corrected mid-analysis: the orchestrator first ranked completion inertia as primary and the missing reference as a contributing factor; the user supplied the counter-example (the non-completion SonarCloud turn that still deviated) that promoted the missing reference to co-primary. A small live instance of multi-angle validation — the orchestrator's model was wrong and a user counter-example fixed it — which is the same discipline this log exists to preserve.
+
+---
+
+## FIX-023 — The client-certificate validation callback checked the chain but NOT the EKU, so a CA-signed server cert passed as a client cert 🔒
+
+**Symptom.** During M4 step 3 (mTLS) CP-2, the initial client-certificate validation accepted any certificate that chained to our CA. Because our single CA signs *both* the broker (serverAuth) cert and client (clientAuth) certs, a CA-signed **server** certificate would be accepted when presented as a **client** certificate — an authentication hole.
+
+**Cause.** The validation callback verified chain-of-trust (does this cert chain to our CA?) but not **purpose** (is this cert *for* client authentication?). Certificate identity and certificate *purpose* are separate facets: the Extended Key Usage (EKU) extension records purpose (`serverAuth` = 1.3.6.1.5.5.7.3.1, `clientAuth` = 1.3.6.1.5.5.7.3.2). "Same CA signed it" ≠ "it's allowed to be a client." certgen (CP-1) already issued clientAuth vs serverAuth correctly; the broker just wasn't reading that distinction.
+
+**Fix.** Extracted the inline validation lambda into a testable `ClientCertificateValidator.Validate` (in `Flumewright.Security`) that enforces the clientAuth EKU (OID `1.3.6.1.5.5.7.3.2`) **by value** on the leaf, then does CustomRootTrust chain validation against the CA. EKU absent → reject (fail-closed, not a lenient "no-EKU = unrestricted"). Unit-tested with certgen-minted certs, including the exact attack path: a real broker (serverAuth) cert is rejected as a client cert (`Validate_WithoutClientAuthEku_ReturnsFalse`).
+
+**How it was caught (meta).** Neither the CLI implementer nor the `code-review` sub-agent flagged this; the orchestrator's independent code read at the checkpoint found it. A three-layer catch (implementer → reviewer sub-agent → orchestrator) — evidence that reading the code at a security-adjacent checkpoint has real value over trusting the report.
+
+**Future impact.** General rule: **certificate validation must check purpose (EKU), not only chain of trust** — especially when one CA signs multiple certificate roles. Any future cert-consuming path (e.g. inter-broker mTLS) must apply the same EKU discipline.
+
+---
+
+## FIX-024 — mTLS reject tests asserted a flaky gRPC StatusCode; fixed by asserting the stable inner exception 🔒
+
+**Symptom.** In CP-3, the mTLS reject-path integration tests (no cert / untrusted cert) initially asserted `StatusCode.Unavailable`, but a 20× loop showed the status flip to `Internal` on some runs — the test flaked.
+
+**Cause.** A rejected mTLS handshake surfaces at the **first RPC** (not at channel construction — gRPC connects lazily), as an `RpcException` whose `StatusCode` depends on the *timing of the TLS stream close* during the handshake: sometimes `Unavailable`, sometimes `Internal`. The rejection itself is deterministic; only the surface status code is non-deterministic. The **inner exception is always the same** — `HttpRequestException → IOException` ("HTTP/2 connection could not be established … server did not complete the HTTP/2 handshake").
+
+**Fix.** Assert the **stable layer**, not the flaky surface: verify an `RpcException` is thrown and walk its `InnerException` chain for `IOException` / `AuthenticationException` **by type** (not by StatusCode, not by message string — the message text can change across .NET versions). StatusCode is logged, not asserted. Re-verified 20× flake-free.
+
+**Future impact.** The mTLS instance of DEC-031 — a sibling of "returned OK ≠ the downstream effect is live." Here: **an exception's surface code is not the essence of the failure; when the surface is non-deterministic, assert the deterministic underlying cause.** Also a reminder that the reject *observation point* must be discovered empirically (DEC-031 discipline), which the CLI correctly did by stopping to report rather than papering over the flake.
+
+---
+
+## DEC-033 — ACL (authorization) is a separate later milestone; M4 lays only the interceptor seam + the M5 no-bypass guard 🔒
+
+**Decision.** M4 provides authentication + identity extraction only. **Authorization (ACL) is a separate, later, milestone-sized effort** (rule storage + evaluation engine + management API + enforcement on every RPC). M4's job is to lay the *seam* ACL will build on: the principal on the request context (DEC-034), consumed by a future authorization **interceptor placed behind the auth interceptor**, so handlers stay untouched.
+
+**Rationale.** Authorization is cross-cutting; an interceptor is the right structural home and keeps ACL from entangling with M4 or M5. ACL depends on mTLS identity, so it must come after M4; splitting it out keeps M4 shippable and focused.
+
+**Guard for M5 (record and honor).** M5 (throughput optimization) must **NOT** create a fast path that bypasses the interceptor pipeline — a bypass would also bypass a future ACL. Any M5 optimization must keep every RPC flowing through the interceptor chain.
+
+**Future impact.** When ACL is built, it reads the principal from the context shape fixed in DEC-034 without needing to know how it was produced. Do not add ACL enforcement to M4 "helpfully."
+
+---
+
+## DEC-034 — Principal shape: `User:<CN>` stored in `ServerCallContext.UserState` under a fixed constant key 🔒
+
+**Decision.** The identity interceptor stores the principal as the string `"User:<CN>"` (CN from the validated client certificate subject) in `ServerCallContext.UserState`, keyed by `IdentityConstants.PrincipalContextKey` (`"Flumewright.Principal"`). The key and shape are fixed in a constants class so a future ACL interceptor reads them without knowing how they were produced.
+
+**Rationale.** Mirrors Kafka's DN-as-principal convention (simplified to CN for now). A stable, documented context slot is the contract between M4 (producer) and ACL (consumer); putting it behind a constant avoids stringly-typed coupling.
+
+**Edge behaviour (fail-closed).** A missing/empty CN, or a null HttpContext, results in `RpcException(Unauthenticated)` — the interceptor never emits an empty or null principal. (Defined and unit-tested rather than left to an accidental null/NRE.)
+
+**Future impact.** If the principal ever needs richer shape (full DN, roles), change it here; ACL reads through the same constant. The `User:` prefix leaves room for other principal types later.
+
+---
+
+## DEC-035 — The mTLS switch defaults OFF (DEC-030 config-seam pattern); existing tests run unchanged on plaintext 🔒
+
+**Decision.** mTLS is gated by `Broker:RequireClientCertificate` (default **false**) plus `Broker:ServerCertPath` / `Broker:CaCertPath`, following the DEC-030 configuration-seam pattern: defaults preserve current behaviour, opt-in enables mTLS. With the switch off, the broker's listener code path is the existing plaintext path unchanged, so the 21 pre-existing integration tests run untouched; only the new mTLS tests use a cert-aware harness variant.
+
+**Rationale.** Minimal blast radius: no rewrite of the existing suite, no forced cert plumbing for plaintext tests. This is a **test-compatibility seam, not a supported "plaintext mode" product feature** — the deployment story is mTLS-on.
+
+**Future impact.** New transport features should follow the same seam: expose via config, default to current behaviour, let tests/environments opt in.
+
+---
+
+## DEC-036 — Identity verification is split by layer: unit for extraction, integration for transport accept/reject, e2e proof deferred to ACL 🔒
+
+**Decision.** Because M4 extracts identity but **enforces nothing**, "the identity landed on the context" has no externally observable effect (no rejection, no response change). So verification is split: **unit tests** verify identity extraction (cert with CN=alice → `User:alice` in the expected slot); **integration tests** verify the transport property (valid cert connects; no/untrusted cert rejected); **the end-to-end proof that the context identity is consumed is deliberately deferred to the ACL milestone**, which reads it for real.
+
+**Rationale.** An unconsumed hook cannot be e2e-proven from outside — there is nothing observable to assert. Forcing observability now would mean adding a debug/whoami RPC, which would change the proto (unwanted). Splitting the layers keeps the proto unchanged and keeps M4's scope honest (the hook is laid, not exercised).
+
+**Future impact.** General principle: **a hook that nothing consumes yet cannot be end-to-end tested; split test layers along the boundary of what is observable, and let the hook's first consumer supply the e2e proof.** A third sibling to "observe, don't dictate" and "returned OK ≠ effect live" (02 §11.65).
+
+---
+
+## DEC-037 — Security config fails fast; it never silently downgrades (contrast with DEC-030's numeric fallback) 🔒
+
+**Decision.** If mTLS is requested (`RequireClientCertificate = true`) but a cert path is missing/unreadable/invalid, the broker **fails to start** with a clear error (`MtlsConfig.FromConfiguration`). It never falls back to plaintext when mTLS was asked for.
+
+**Rationale — and the contrast with DEC-030.** DEC-030 made sweeper timings fall back to safe defaults on a bad value — correct there, because "a safe default timeout" *is* safe. But a security switch has no safe fallback: "run with security off" is not a safe default. **The test for whether a config error should fall back or fail-fast is: is the fallen-back state safe?** Numbers → fall back; security → fail fast. A silent downgrade would leave an operator believing mTLS is on while it isn't — the worst kind of failure (hidden).
+
+**Future impact.** Any future security-relevant switch (auth, encryption, ACL enforcement) fails fast on misconfiguration; never silently degrades. Pair this with the fail-closed request-time discipline (DEC-034 edge behaviour): fail-fast at startup, fail-closed at request time.
+
+---
+
+
+## Index (one-line summary of every entry)
+
+For memory-less readers (a fresh orchestrator/CLI session, or a later you): the table of headings tells you *where*, this tells you *what*. Scan here first; open the full entry only when relevant. Chronological (document order).
+
+| ID | One-line summary |
+|----|------------------|
+| FIX-001 | Fan-out broken: shared per-topic channel delivered to only one subscriber. |
+| FIX-002 | Publisher cancellation token misused on subscriber writes; blocked fan-out. |
+| DEC-001 | M1 Publish is unary (streaming deferred to M5). |
+| DEC-002 | Ack/Admin RPCs deferred to M3. |
+| DEC-003 | `global.json` rollForward = latestFeature (not latestMinor). |
+| DEC-004 | `.gitignore` must block certs/keys and logs. |
+| DEC-005 | DI via built-in container; depend on interfaces. |
+| DEC-006 | Disposal roadmap (IDisposable / IAsyncDisposable). |
+| DEC-007 | M1 integration test is in-process (real-port Kestrel). |
+| FIX-003 | Subscriber channel not completed on unsubscribe. |
+| FIX-004 | Line-ending normalization (.gitattributes) missing. |
+| FIX-005 | Integration-test host: WebApplicationFactory incompatible with real Kestrel. |
+| DEC-008 | Http2UnencryptedSupport switch unnecessary for plaintext h2c (.NET 8). |
+| FIX-006 | CLI's broad `git add` staged unrelated changes into wrong commits. |
+| FIX-007 | pre-commit hook tracked as 100644: local validation gate may never have run. |
+| DEC-009 | Development moved into a VS Code dev container (Linux). |
+| DEC-010 | Bind-mount UID mismatch breaks `obj/` writes and `chmod` (hooks). |
+| FIX-008 | Integration test could hang instead of failing on timeout. |
+| DEC-011 | M1 zoom-out review: outcome & dispositions. |
+| DEC-012 | main branch protection enabled via GitHub ruleset. |
+| DEC-013 | Risk-based checkpoint verification (replaces per-step hand verification). |
+| DEC-014 | Agent harness: standing rules (GEMINI.md) + workspace skills. |
+| DEC-015 | Delivery model = log/pull (Kafka-style), not push; M2 redefined. |
+| DEC-016 | Tool permission: strict → always-proceed (control re-placed, not relaxed). |
+| FIX-009 | Checkpoint A caught a LATEST-semantics bug (trigger for DEC-015). |
+| DEC-017 | Planned CI/CD quality-gate hardening (reserved; execute after M2). |
+| DEC-018 | M2 zoom-out review: outcome & dispositions. |
+| FIX-010 | Empty `catch (Exception)` in SubscribeAsync swallowed reader faults. |
+| DEC-019 | CI/CD quality-gate hardening: executed (soft done; hard pending). |
+| DEC-020 | Reviewer sub-agents: function-based & on-call, not domain-based & standing. |
+| DEC-021 | Strengthen Roslyn analyzers to block FIX-010-class defects at build time. |
+| DEC-022 | Dedicated Concurrency Strategy doc (11) + 🔒 markers + reminder rule. |
+| DEC-023 | Offset commit semantics: committed = next offset to read (Kafka-style). |
+| FIX-011 | Offset commit silently accepted unknown topics / out-of-range partitions. |
+| FIX-012 | Concurrency tests that looked green but verified nothing (fake-green). |
+| FIX-013 | Duplicated fan-in + async LATEST resolution caused a hang; unified fan-in, resolve at entry. |
+| FIX-014 | RetryingConsumer committed processed offset instead of next (broke resume). |
+| FIX-015 | Unawaited tasks in dual-subscription helper & redelivery tests (fake-green risk). |
+| DEC-024 | Typed group control-flow status (`GroupErrorCode`) over the wire, never string matching. |
+| DEC-025 | Coyote is a dedicated assembly; its coverage is a documented roadmap, not a label. |
+| FIX-016 | Coyote layer never actually ran; "0 bugs/100 iterations" was a false positive. |
+| FIX-017 | Other M3c checkpoint fixes (orphan window, cross-component lock, interleaving assertions). |
+| FIX-018 | Empty `catch` around test setup swallowed faults (fake-green); caught at M3c zoom-out. |
+| DEC-026 | M3c zoom-out: record-only dispositions (intended, not defects). |
+| FIX-019 | Coyote coupled to every build broke CI; decoupled into a manifest-pinned step. |
+| FIX-020 | CI iteration guard so a regression can't silently drop Coyote to one iteration. |
+| FIX-021 | CI-only e2e failure looked like a rebalance defect but was a flaky test (product correct). |
+| DEC-027 | Tool boundary: interleaving races → Coyote; sweeper + wall-clock liveness → integration. |
+| DEC-028 | Shift-left the SonarCloud rules into the local build (planned; execute at M4 start). |
+| DEC-029 | Shift-left analyzer tiering: mechanical rules hard-gate locally; semantic → SonarCloud + review. |
+| FIX-022 | Rebuilt the flaky composite e2e tests (FIX-021 gap closed): stage-isolated, real sweeper. |
+| DEC-030 | Sweeper timing is a configurable testability seam; wall-clock kept, clock shortened. |
+| DEC-031 | `SyncGroup Ok` establishes membership, NOT the `Latest` read cursor (pinned at stream activation). |
+| DEC-032 | Discipline eroded at wrap-up: missing GEMINI.md ref + completion inertia + git-boundary wording. |
+| FIX-023 | Cert validation checked chain but not EKU; a CA-signed server cert passed as a client cert. |
+| FIX-024 | mTLS reject tests asserted a flaky StatusCode; fixed by asserting the stable inner exception. |
+| DEC-033 | ACL is a separate later milestone; M4 lays only the interceptor seam + M5 no-bypass guard. |
+| DEC-034 | Principal shape: `User:<CN>` in `ServerCallContext.UserState` under a fixed constant key. |
+| DEC-035 | mTLS switch defaults OFF (DEC-030 seam); existing tests run unchanged on plaintext. |
+| DEC-036 | Identity verification split by layer: unit for extraction, integration for transport, e2e → ACL. |
+| DEC-037 | Security config fails fast, never silently downgrades (contrast DEC-030 numeric fallback). |
+
+---
+
+## Deferred Items Ledger
+
+A single checkpoint for everything we consciously deferred, so "later" doesn't become "never". When a
+milestone starts, scan this table for items tagged to it. Plans may change at that point — that is the
+intent: each milestone boundary is a review moment, not a binding contract. The authoritative detail lives
+in the referenced DEC/FIX entry or design note; this table is the index.
+
+| Item | What | Deferred to | Status / revisit |
+|------|------|-------------|------------------|
+| DEC-001 | Streaming Publish (unary → client/bidi stream) | M5 | Open — revisit M5 |
+| DEC-002 | `Acknowledge` RPC | M3 | **Closed — superseded.** ack = offset commit (M3a `CommitOffset`); nack = SDK pattern (publish to retry/dlq topic), no broker RPC. See M3b design note. |
+| DEC-002 | `Admin` RPC (topic management) | M3 | Open — when topic management is actually needed (not M3a/b/c) |
+| DEC-006 | Disposal: in-flight / redelivery timers & schedulers | M3 | **Deferred further → Phase 2.** M3b uses no-delay non-blocking retry (no timers). Applies when delayed backoff is built (see "delayed backoff" row). |
+| DEC-006 | Disposal: `X509Certificate2` (secure connections) | M4 | **Closed — M4 mTLS.** Certs disposed in the cert-aware harness (`MtlsBrokerAppFactory` DisposeAsync) and validator paths; no cert material committed (generator-only). |
+| DEC-006 | Disposal: disk WAL `FileStream` / segment handles | Phase 2 | Open — Phase 2 (`DiskTopicStore` as `IAsyncDisposable`) |
+| DEC-006 | Bound `_topics` dictionary growth (slow leak under many distinct topics) | M2+ | Open — revisit (no firm milestone) |
+| DEC-004 | certs/keys + logs gitignore realization | M4 / M6 | Partial — M4 certgen → `certs/`; M6 logging → `logs/` |
+| DEC-017 | Microsoft Coyote (systematic concurrency testing) 🔒 | after M3 | Open — after M3c (M3 adds consumer-group/offset-commit concurrency; Coyote lands naturally after) |
+| FIX (M1) | Test enumerator `await using` (~7 tests) | — | Open — low priority; one commit when touched |
+| M3b design | **Delayed / multi-stage retry backoff** (retry-1/2/3 with increasing delay) 🔒 | **Phase 2** | NEW — requires a delayed-redelivery scheduling mechanism (cannot sleep the consumer; due-time pause/resume). M3b opens the structure (`RetryPolicy` returns destination + delay); Phase 2 implements the delay. |
+| M3b design | **Blocking (in-place) retry mode** 🔒 | **Phase 2** | NEW — shares the same delay mechanism as multi-stage backoff, so built together in Phase 2. M3b leaves it as an extension point only; non-blocking is the M3b default. Use case: transient downstream failures where preserving order is worth blocking. |
+| FIX-021 | **Rebuild the flaky composite e2e tests, stage-isolated** 🔒 | M4 | **Closed — FIX-022.** Rebuilt as four one-rebalance-per-test integration tests (split, leader-vanish, `Latest` single, `Latest`×rebalance), deterministic, real sweeper for liveness; 10× flake-free; suite 17 → 21. |
+| DEC-028 | **Shift-left SonarAnalyzer rules into local build + pre-commit** (`.editorconfig`) + GEMINI.md coding conventions 🔒 | M4 | **Closed — DEC-029.** Tier 1 (CA1822/CA1861) local hard-gate + VSTHRD200 test-scope; no Sonar package locally; merged at M4 start. |
+| DEC-030 | **Move session-timeout ownership into `GroupCoordinator`** (coordinator owns its eviction policy; `SweepDeadMembers` takes no arg) 🔒 | later (unset) | NEW — proposal, NOT a defect. Zoom-out suggestion; deferred because it is an architectural refactor out of the test-rebuild scope AND would modify `GroupCoordinator.cs` (Coyote-visible), breaking the clean separation. Revisit if the config surface grows. |
+| M4 (post-mTLS) | **`Subscribe_Latest_Atomicity` unit test flakes on the upgraded test infra** 🔒 | next (before merging the Dependabot test-stack PR) | NEW — surfaced (not a product bug). The test waits for "publish → receive" via a `Task.Delay` race; the upgraded test runner (xunit.runner.visualstudio 2→3, test-sdk 17→18) changed async scheduling so `Delay` sometimes wins. main (old infra) is green; re-run passes → flaky. Fix (test only, product untouched — FIX-021 rule): make it deterministic with the marker technique (DEC-031/FIX-013), verify 20×. Do it on its own branch, then rebase & merge the Dependabot PR. See the private study memo for the xUnit parallel-scheduling evidence. |
 
 ---

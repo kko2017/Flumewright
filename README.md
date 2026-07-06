@@ -19,10 +19,11 @@ publish-subscribe pattern. It is built on a **Kafka-style log model**: publish a
 per-partition append-only log, and subscribers consume by pulling at their own offset.
 
 > **Status:** Phase 1 in progress. M1 (gRPC contract + broker host + pub→sub), M2
-> (partitioning + append-only log + offset-based consumption), and **all of M3** are complete —
-> consumer groups + offset-commit (M3a), redelivery/DLQ (M3b), and rebalance/dynamic assignment
-> (M3c) are done. Transport security (mTLS) and 100K-scale streaming are upcoming milestones —
-> see [Roadmap](#%EF%B8%8F-roadmap). Features below are marked ✅ done or 🔜 planned accordingly.
+> (partitioning + append-only log + offset-based consumption), **all of M3** (consumer groups +
+> offset-commit M3a, redelivery/DLQ M3b, rebalance/dynamic assignment M3c), and **M4** (transport
+> security — mTLS mutual authentication + identity extraction) are complete. 100K-scale streaming
+> (M5) and observability (M6) are upcoming — see [Roadmap](#%EF%B8%8F-roadmap). Features below are
+> marked ✅ done or 🔜 planned accordingly.
 
 ---
 
@@ -44,7 +45,7 @@ mechanisms, verification discipline, and cost strategy.
 
 ## ✨ Features
 
-**Working today (M1–M3):**
+**Working today (M1–M4):**
 - ✅ **Process isolation** — the broker runs as an independent process; clients connect over gRPC
 - ✅ **Log-based delivery** — publish appends to a per-partition append-only log; messages are retained
   (for the process lifetime in Phase 1) rather than pushed-and-forgotten
@@ -60,9 +61,11 @@ mechanisms, verification discipline, and cost strategy.
   group coordinator does eager rebalancing with generation fencing, liveness via heartbeats, and an SDK-side
   assignment strategy; control-flow status is a typed code, not string matching (M3c)
 - ✅ **Extensibility** — the broker treats payloads as opaque bytes, so clients may use any `.proto` they like
+- ✅ **mTLS security** — mutual certificate authentication; the broker validates the client cert chain and
+  clientAuth EKU, then extracts the client identity (`User:<CN>`) onto the request context for a future ACL
+  (authentication + identity only; authorization is a later milestone) (M4)
 
 **Planned (later milestones):**
-- 🔜 **mTLS security** — mutual certificate verification (M4)
 - 🔜 **100K-scale throughput** — streaming publish + batching + backpressure (M5)
 - 🔜 **Observability** — metrics and structured logging (M6; distributed tracing in Phase 2)
 - 🔜 **Persistence & retention** — disk-backed log, eviction policy, replay/seek (Phase 2)
@@ -86,7 +89,7 @@ mechanisms, verification discipline, and cost strategy.
  └─────────────┘                              └──────────────────────────────┘
 
  Publish appends to a partition's log; each subscriber reads the log at its own offset.
- (mTLS, consumer groups, offset-commit acks, and streaming publish are upcoming — see Roadmap.)
+ (consumer groups, offset-commit acks, and streaming publish are upcoming — see Roadmap.)
 ```
 
 See [docs/design/plan.md](docs/design/plan.md) for the full design.
@@ -129,7 +132,7 @@ dotnet test --filter "Category!=Load"
 ```bash
 dotnet run --project src/Flumewright.Broker
 ```
-The broker starts a gRPC host (plaintext in Phase 1; mTLS arrives in M4). Publishers append to a
+The broker starts a gRPC host (plaintext by default; mTLS is opt-in via config, added in M4). Publishers append to a
 topic's partition log; subscribers stream messages from their offset.
 
 ### Run the Sample Publisher / Subscriber
@@ -215,7 +218,7 @@ Phase 1 (in-memory, high-throughput, security) → Phase 2 (persistence & ops).
 | M3a | Consumer groups + at-least-once via offset commit (static assignment) | ✅ done |
 | M3b | Redelivery & DLQ (non-blocking, SDK-side over plain topics) | ✅ done |
 | M3c | Rebalance / dynamic partition assignment | ✅ done |
-| M4 | mTLS (mutual certificates) | 🔜 |
+| M4 | mTLS (mutual certificates) + identity extraction | ✅ done |
 | M5 | Streaming publish + batching + backpressure (100K) | 🔜 |
 | M6 | Metrics + logging → tag `v0.1.0` | 🔜 |
 | Phase 2 | Disk persistence, retention/eviction, replay/seek, tracing | 🔜 |

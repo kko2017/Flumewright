@@ -10,6 +10,7 @@ Design, learning, and process documents for Flumewright. (The project overview i
 - [M2 Design Note — Partition Log Model](design/m2-partitioning.md) — per-partition append-only log, offset-based consumption
 - [M3b Design Note — Redelivery & Dead-Letter Queue](design/m3b-redelivery-dlq.md) — non-blocking retry over a `{topic}.retry` topic, DLQ quarantine, all on plain topics
 - [M3c Design Note — Rebalance / Dynamic Assignment](design/m3c-rebalance.md) — eager rebalancing, the group coordinator, generation fencing, the three-state machine
+- [M4 Design Note — mTLS Mutual Authentication + Identity Extraction](design/m4-mtls.md) — Kestrel chain + clientAuth-EKU validation, the identity interceptor (`User:<CN>` on the request context), the opt-in config seam, and the ACL hook left for a later milestone
 
 ## Learning
 - [Message Bus & PubSub Study Notes](learning/study-notes.md) — PubSub/message-bus concepts, the log model, test design
