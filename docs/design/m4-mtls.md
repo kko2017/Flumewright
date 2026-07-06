@@ -33,6 +33,12 @@ a separate later milestone (§5). Nothing is denied based on identity in M4.
 - **Kestrel enforces presence and validity**: the TLS listener requires a client certificate
   (`ClientCertificateMode.RequireCertificate`) chained to our CA. An unauthenticated or untrusted client
   fails at (or immediately after) the handshake — it never reaches a handler.
+- **Validation checks chain AND purpose (EKU).** Chain-of-trust alone is insufficient: our single CA signs
+  both the broker (serverAuth) and client (clientAuth) certs, so a chain-only check would accept a
+  CA-signed *server* cert presented as a client cert. Validation therefore also enforces the **clientAuth
+  EKU** (OID `1.3.6.1.5.5.7.3.2`) on the leaf. Implemented as an extracted `ClientCertificateValidator`
+  (testable; not an inline lambda). *(Added post-implementation — 09 FIX-023; the original draft named only
+  the chain.)*
 - **A gRPC interceptor extracts identity**: reads the validated client certificate off the connection,
   parses the principal, and stores it on the request context. The interceptor does *not* re-do certificate
   validation (that is Kestrel's job); it only maps cert → principal.
@@ -40,11 +46,13 @@ a separate later milestone (§5). Nothing is denied based on identity in M4.
   the application layer where ACL will later consume it. This also introduces the **interceptor pipeline**
   that ACL will extend (§5).
 
-### 2.2 Principal shape ⟳
-- Direction: `User:<CN>` from the client certificate subject, mirroring Kafka's DN-as-principal convention.
-- ⟳ Finalize during implementation: the exact `ServerCallContext` storage (UserState key vs HttpContext
-  feature), and the exact parse (CN only vs configurable DN). Keep the stored shape stable and ACL-ready —
-  a later ACL interceptor must be able to read it without knowing how it was produced. Record as a DEC.
+### 2.2 Principal shape — finalized (09 DEC-034)
+- `User:<CN>` from the client certificate subject (CN), mirroring Kafka's DN-as-principal convention.
+- **Finalized:** stored in `ServerCallContext.UserState` under the constant key
+  `IdentityConstants.PrincipalContextKey` (`"Flumewright.Principal"`); parse is CN-only for now. The shape
+  is fixed in a constants class so a later ACL interceptor reads it without knowing how it was produced.
+- **Edge (fail-closed):** a missing/empty CN, or a null HTTP context, yields `RpcException(Unauthenticated)`
+  — never an empty or null principal.
 
 ### 2.3 The require-client-cert switch — DEC-030 configuration-seam pattern
 - `Broker:` config key (e.g. `Broker:RequireClientCertificate` + cert path/password keys as needed),
@@ -53,6 +61,9 @@ a separate later milestone (§5). Nothing is denied based on identity in M4.
   unchanged on the plaintext listener; only mTLS tests use a cert-enabled harness variant (§4.1). This is a
   test-compatibility seam, not a product "mode matrix" (§1 fence): the supported deployment story is
   mTLS-on.
+- **Fail-fast, never silent-downgrade (09 DEC-037):** if the switch is on but a cert path is missing/invalid,
+  startup throws — the broker never falls back to plaintext when mTLS was requested. (Contrast DEC-030's
+  numeric fallback: numbers fall back to a safe default; security has no safe fallback, so it fails fast.)
 
 ### 2.4 Proto / API impact — none
 mTLS lives at the transport layer, below the gRPC service contract. Identity rides the connection, not the
@@ -86,10 +97,11 @@ messages. No proto change — kept true by the §4.2 verification decision (no d
 M4 enforces nothing, so "the identity landed on the context" has **no externally observable effect** (no
 rejection, no response change). Decision:
 - **Integration tests verify the transport property**: a client with a valid CA-signed cert connects and
-  RPCs succeed; a client with no / invalid / untrusted cert is rejected. (⟳ the exact observation point of
-  rejection — connect-time vs first-RPC, and which `RpcException` status — is confirmed during
-  implementation per DEC-031: do not assume "handshake returned" semantics; find the real observable
-  moment.)
+  RPCs succeed; a client with no / invalid / untrusted cert is rejected. (**Confirmed — 09 FIX-024:**
+  rejection surfaces at the **first RPC** (gRPC lazy connect), not at channel construction, as an
+  `RpcException` whose StatusCode flakes (Unavailable↔Internal) with handshake-close timing; the tests
+  therefore assert the **stable inner exception** (transport/handshake `IOException`) by type, not the
+  StatusCode. DEC-031's "don't assume handshake-returned semantics" held exactly.)
 - **Unit tests verify identity extraction**: the interceptor, given a (test) certificate, produces the
   expected principal and stores it in the expected context slot.
 - **The end-to-end proof that the context identity is consumed is deliberately deferred to the ACL
@@ -115,7 +127,9 @@ security-adjacent → checkpoint them):
 4. reject paths + cert-aware factory variant + integration tests
 5. **CI cert-generation step (`ci.yml`) — deliberately separate and last**: a workflow change is a
    different risk class than product code, and the CI step can only be written once the tool it invokes
-   is proven locally (steps 1–4 green).
+   is proven locally (steps 1–4 green). **(Outcome: proved unnecessary — the cert-aware harness generates
+   certs in-process via the certgen library, and the mTLS tests already fall inside the existing `dotnet
+   test` filter, so CI runs them with no extra step. Zero steps/commits added.)**
 Fewer checkpoints than M3c (smaller, less concurrency-dangerous), but not zero — three: after step 1,
 after steps 2+3, after step 4.
 
