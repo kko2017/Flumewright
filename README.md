@@ -231,4 +231,4 @@ See the [Execution Plan](docs/design/plan.md) for the full design and the
 
 ## 📄 License
 
-TBD (to be decided)
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
