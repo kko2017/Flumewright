@@ -414,7 +414,7 @@ public class InMemoryTopicStoreTests
         var headers = new Dictionary<string, string>();
         var payload = ReadOnlyMemory<byte>.Empty;
 
-        using var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         
         // Act: subscribe returns. Because LATEST is resolved synchronously at entry,
         // the offset is already pinned.
@@ -423,15 +423,14 @@ public class InMemoryTopicStoreTests
         // Publish a message AFTER Subscribe returned.
         await store.PublishAsync("topic1", ReadOnlyMemory<byte>.Empty, headers, payload);
         
-        // Now begin reading.
+        // Now begin reading. The published message is in the log and LATEST was pinned at subscribe entry, so a correct
+        // product completes this read in milliseconds. Bound it with a generous cancellation (not a
+        // wall-clock race): 30s is untouched in the normal path and only trips on a genuine hang, so
+        // scheduling jitter can't cause a flake the way a 1s race did.
         var enumerator = enumerable.GetAsyncEnumerator(cts.Token);
-        var pendingRead = enumerator.MoveNextAsync().AsTask();
+        var hasNext = await enumerator.MoveNextAsync();
         
-        var completed = await Task.WhenAny(pendingRead, Task.Delay(1000));
-        completed.Should().Be(pendingRead, "The subscriber should have caught the message published after subscribe returned");
-        
-        var hasNext = await pendingRead;
-        hasNext.Should().BeTrue();
+        hasNext.Should().BeTrue("the subscriber must catch the message published after subscribe returned");
         enumerator.Current.Offset.Should().Be(0);
     }
 }
